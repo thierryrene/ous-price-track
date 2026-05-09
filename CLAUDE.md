@@ -49,14 +49,24 @@ Three layers, all under `src/ous_monitor/`:
 2. **Storage** (`storage.py`) — SQLite with two tables: `products` (one row per
    SKU per source) and `price_history` (one row per (source, sku, observed_at)).
    `record_run()` upserts product rows, appends a price observation, and
-   returns counters. `find_new_promotions()` uses a `LAG` window function to
-   find SKUs whose latest observation has `list_price > price` *and* whose
-   previous observation did not — that is the project's definition of "new
-   promotion".
+   returns counters. `find_changes()` uses `LAG` window functions to detect 4
+   mutually-exclusive categories of change since a cutoff timestamp:
+   `new_promo` (started/deepened a discount), `ended` (back to list price),
+   `weaker` (still discounted but discount % shrunk by ≥25% relative — see
+   `DISCOUNT_SHRINK_RATIO`), and `price_up` (price rose ≥5% — see
+   `PRICE_UP_RATIO`). Priority: new_promo > ended > weaker > price_up. The
+   thin wrapper `find_new_promotions()` is kept for backwards compat.
 
 3. **CLI** (`cli.py`) — orchestrates: runs each requested scraper in isolation
    (one source crashing does not stop the others), passes products to storage,
-   queries the new-promotions view, prints the report.
+   queries `find_changes()`, and dispatches to the notifier in one of two
+   modes (flag `--mode`):
+   - `alert` (default): cutoff is `now - 10s`, notifier sends `send_alert()`
+     — single-block message with all 4 categories interleaved.
+   - `digest`: cutoff is `now - --digest-hours` (default 24h), notifier sends
+     `send_digest()` — 4 separate sections with totals.
+   GitHub Actions runs `alert` at 12h UTC and `digest` at 21h UTC (see
+   workflow's `pick_mode` step).
 
 The `Product` dataclass in `models.py` is the contract between scrapers and
 storage. Add a field there if a new piece of data needs to flow through.

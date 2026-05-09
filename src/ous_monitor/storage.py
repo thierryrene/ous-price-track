@@ -139,31 +139,113 @@ def record_run(conn: sqlite3.Connection, products: Iterable[Product]) -> dict[st
     return counters
 
 
-def find_new_promotions(conn: sqlite3.Connection, since: str) -> list[sqlite3.Row]:
-    """Products that started a discount after `since` (ISO timestamp)."""
-    return list(
-        conn.execute(
-            """
-            WITH ranked AS (
-                SELECT source, sku, observed_at, list_price, price,
-                       sizes, stock_qty,
-                       LAG(price)      OVER w AS prev_price,
-                       LAG(list_price) OVER w AS prev_list_price
-                  FROM price_history
-                 WINDOW w AS (PARTITION BY source, sku ORDER BY observed_at)
-            )
-            SELECT p.source, p.sku, p.name, p.url, p.image,
-                   r.list_price, r.price, r.observed_at,
-                   r.prev_price, r.prev_list_price,
-                   r.sizes, r.stock_qty
-              FROM ranked r
-              JOIN products p USING (source, sku)
-             WHERE r.observed_at >= ?
-               AND r.list_price IS NOT NULL
-               AND r.list_price > r.price
-               AND (r.prev_price IS NULL OR r.prev_price > r.price)
-             ORDER BY r.observed_at DESC, p.source, p.name
-            """,
-            (since,),
+# Thresholds (moderados, conforme decisão do usuário em 2026-05-09)
+PRICE_UP_RATIO = 0.05         # +5% no preço dispara "subiu"
+DISCOUNT_SHRINK_RATIO = 0.25  # desconto % encolheu em 25%+ relativo dispara "enfraqueceu"
+
+
+def _ranked_with_prev(since: str) -> str:
+    """SQL fragment: pega cada observação >= `since` com a observação anterior do mesmo SKU."""
+    return """
+        WITH ranked AS (
+            SELECT source, sku, observed_at, list_price, price, sizes, stock_qty,
+                   LAG(price)      OVER w AS prev_price,
+                   LAG(list_price) OVER w AS prev_list_price,
+                   LAG(observed_at) OVER w AS prev_observed_at
+              FROM price_history
+             WINDOW w AS (PARTITION BY source, sku ORDER BY observed_at)
         )
-    )
+        SELECT p.source, p.sku, p.name, p.url, p.image,
+               r.list_price, r.price, r.observed_at,
+               r.prev_price, r.prev_list_price, r.prev_observed_at,
+               r.sizes, r.stock_qty
+          FROM ranked r
+          JOIN products p USING (source, sku)
+         WHERE r.observed_at >= ?
+    """
+
+
+def find_changes(conn: sqlite3.Connection, since: str) -> dict:
+    """Detecta 4 categorias de mudança desde `since`:
+
+    - 'new_promo': produto começou um desconto (ou caiu mais)
+    - 'price_up': preço subiu ≥5% (e não acabou — está coberto em 'ended')
+    - 'ended':    promo acabou (price agora == list_price; antes price < list_price)
+    - 'weaker':   promo enfraqueceu (desconto % encolheu ≥25% relativo)
+
+    Retorna dict[str, list[sqlite3.Row]]. Categorias são mutuamente exclusivas
+    pra cada SKU dentro do mesmo run (priorização: new_promo > ended > weaker > price_up).
+    """
+    base = _ranked_with_prev(since)
+
+    new_promo = list(conn.execute(
+        base + """
+           AND r.list_price IS NOT NULL
+           AND r.list_price > r.price
+           AND (r.prev_price IS NULL OR r.prev_price > r.price)
+         ORDER BY r.observed_at DESC, p.source, p.name
+        """,
+        (since,),
+    ))
+
+    ended = list(conn.execute(
+        base + """
+           AND r.list_price IS NOT NULL
+           AND r.price >= r.list_price          -- está a preço cheio agora
+           AND r.prev_price IS NOT NULL
+           AND r.prev_list_price IS NOT NULL
+           AND r.prev_price < r.prev_list_price -- estava em promo antes
+         ORDER BY r.observed_at DESC, p.source, p.name
+        """,
+        (since,),
+    ))
+
+    # IDs já cobertos por categorias mais prioritárias — evitar dupla contagem.
+    covered = {(r["source"], r["sku"]) for r in new_promo}
+    covered.update((r["source"], r["sku"]) for r in ended)
+
+    weaker_raw = list(conn.execute(
+        base + """
+           AND r.list_price IS NOT NULL
+           AND r.list_price > r.price             -- ainda em promo
+           AND r.prev_price IS NOT NULL
+           AND r.prev_list_price IS NOT NULL
+           AND r.prev_price < r.prev_list_price   -- estava em promo antes
+         ORDER BY r.observed_at DESC, p.source, p.name
+        """,
+        (since,),
+    ))
+    weaker = []
+    for r in weaker_raw:
+        if (r["source"], r["sku"]) in covered:
+            continue
+        prev_disc = 1 - (r["prev_price"] / r["prev_list_price"])
+        cur_disc = 1 - (r["price"] / r["list_price"])
+        if prev_disc <= 0:
+            continue
+        rel_shrink = (prev_disc - cur_disc) / prev_disc
+        if rel_shrink >= DISCOUNT_SHRINK_RATIO:
+            weaker.append(r)
+    covered.update((r["source"], r["sku"]) for r in weaker)
+
+    price_up_raw = list(conn.execute(
+        base + """
+           AND r.prev_price IS NOT NULL
+           AND r.price > r.prev_price * (1 + ?)
+         ORDER BY r.observed_at DESC, p.source, p.name
+        """,
+        (since, PRICE_UP_RATIO),
+    ))
+    price_up = [r for r in price_up_raw if (r["source"], r["sku"]) not in covered]
+
+    return {
+        "new_promo": new_promo,
+        "ended": ended,
+        "weaker": weaker,
+        "price_up": price_up,
+    }
+
+
+def find_new_promotions(conn: sqlite3.Connection, since: str) -> list:
+    """Backwards-compatible wrapper — retorna só a categoria new_promo."""
+    return find_changes(conn, since)["new_promo"]

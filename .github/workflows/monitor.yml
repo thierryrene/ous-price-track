@@ -2,11 +2,19 @@ name: monitor
 
 on:
   schedule:
-    # 12:00 e 21:00 UTC (= 09:00 e 18:00 em BRT, UTC-3)
+    # 12:00 UTC = 09:00 BRT  → modo "alert" (notificações ao vivo)
+    # 21:00 UTC = 18:00 BRT  → modo "digest" (resumo do dia, 4 seções)
     - cron: "0 12,21 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Modo de notificação"
+        required: false
+        default: "alert"
+        type: choice
+        options: [alert, digest]
 
-# Garante que dois runs simultâneos não tentem commitar o DB ao mesmo tempo.
+# Evita que dois runs simultâneos tentem commitar o DB ao mesmo tempo.
 concurrency:
   group: monitor
   cancel-in-progress: false
@@ -19,10 +27,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Checkout (precisa do histórico para commit)
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          # Usa GITHUB_TOKEN; precisa de write porque vamos commitar o DB.
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Python 3.11
@@ -33,11 +40,23 @@ jobs:
           cache-dependency-path: pyproject.toml
 
       - name: Instalar dependências
-        # Apenas o que é usado por OUS+Netshoes. Playwright fica de fora —
-        # Centauro está atrás de Akamai e bloqueia IPs Azure dos runners.
+        # Centauro é pulada (Akamai bloqueia IPs do runner) — sem Playwright.
         run: |
           python -m pip install --upgrade pip
           pip install "httpx>=0.27,<0.28" "selectolax>=0.3.21"
+
+      - name: Decidir modo (alert/digest)
+        id: pick_mode
+        run: |
+          if [ -n "${{ inputs.mode }}" ]; then
+            mode="${{ inputs.mode }}"
+          else
+            # Cron: 12h UTC → alert, 21h UTC → digest. Se hora não bater, alert.
+            hour=$(date -u +%H)
+            if [ "$hour" = "21" ]; then mode="digest"; else mode="alert"; fi
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "Mode escolhido: $mode (hora UTC=$(date -u +%H))"
 
       - name: Capturar revisão do DB antes do run
         id: db_before
@@ -48,12 +67,14 @@ jobs:
             echo "hash=missing" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Rodar monitor (OUS + Netshoes; Centauro pulada)
+      - name: Rodar monitor (OUS + Netshoes)
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          PYTHONPATH=src python -m ous_monitor.cli run --sources ous netshoes
+          PYTHONPATH=src python -m ous_monitor.cli run \
+            --sources ous netshoes \
+            --mode "${{ steps.pick_mode.outputs.mode }}"
 
       - name: Commitar DB se houve mudança
         run: |
@@ -65,5 +86,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data/prices.db
-          git commit -m "chore(data): snapshot $(date -u +%Y-%m-%dT%H:%MZ)"
+          git commit -m "chore(data): snapshot ${{ steps.pick_mode.outputs.mode }} $(date -u +%Y-%m-%dT%H:%MZ)"
           git push

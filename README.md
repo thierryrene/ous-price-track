@@ -26,9 +26,24 @@ Para a fonte Centauro funcionar é preciso ter `/usr/bin/google-chrome` instalad
 
 ### Notificação Telegram
 
-Cada `run` envia ao seu chat as promoções **novas** detectadas (uma mensagem
-HTML com nome, preço de/por, % desconto e link clicável). Se houver muitas
-promoções a mensagem é particionada em chunks de até ~3.8k chars.
+Cada `run` analisa o histórico e detecta **4 categorias de mudança** desde a
+última observação:
+
+- 🆕 **Promoção nova** — produto entrou em desconto (ou caiu mais)
+- 🔚 **Acabou a promo** — voltou ao preço cheio
+- 📉 **Desconto piorou** — ainda em promo, mas o desconto encolheu ≥25%
+  (ex: era -40%, virou -15%)
+- 📈 **Subiu de preço** — aumento ≥5% sem encerrar promoção (filtro contra ruído)
+
+O CLI tem dois modos de envio (flag `--mode`):
+
+- **`alert`** (default): envia tudo que mudou nesta execução, todas as
+  categorias num único bloco com cabeçalho. Pensado para runs de tempo real.
+- **`digest`**: agrupa mudanças das últimas 24h em **4 seções separadas**
+  (configurável via `--digest-hours`). Pensado para 1×/dia, fim do dia.
+
+No GitHub Actions a manhã (12h UTC) roda `alert` e a tarde (21h UTC) roda
+`digest`, te dando um resumo consolidado no fim do dia.
 
 Como obter as credenciais:
 

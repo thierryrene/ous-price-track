@@ -15,11 +15,11 @@ from pathlib import Path
 
 from .dotenv import load_dotenv
 from .models import Product
-from .notifier import TelegramConfigError, send_promotions
+from .notifier import TelegramConfigError, send_alert, send_digest
 from .scrapers.centauro import CentauroScraper
 from .scrapers.netshoes import NetshoesScraper
 from .scrapers.ous import OusScraper
-from .storage import connect, find_new_promotions, record_run
+from .storage import connect, find_changes, find_new_promotions, record_run
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DB = REPO_ROOT / "data" / "prices.db"
@@ -58,9 +58,15 @@ def _print_promo_row(p: Product) -> None:
 
 def cmd_run(args: argparse.Namespace) -> int:
     sources = args.sources or list(SCRAPERS)
-    cutoff_iso = (
-        datetime.now(timezone.utc) - timedelta(seconds=10)
-    ).isoformat(timespec="seconds")
+    now = datetime.now(timezone.utc)
+    # Janela de detecção:
+    # - alert: últimos 10s (= o que foi inserido nesta execução)
+    # - digest: últimas 24h (consolida o dia inteiro de mudanças)
+    if args.mode == "digest":
+        cutoff_dt = now - timedelta(hours=args.digest_hours)
+    else:
+        cutoff_dt = now - timedelta(seconds=10)
+    cutoff_iso = cutoff_dt.isoformat(timespec="seconds")
 
     all_products: list[Product] = []
     failed: list[str] = []
@@ -75,7 +81,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             products = scraper_cls().fetch_all()
             log.info(">>> %s: %d produtos", name, len(products))
             all_products.extend(products)
-        except Exception:  # noqa: BLE001 — não deixar uma fonte derrubar as outras
+        except Exception:  # noqa: BLE001
             log.exception(">>> %s: falhou", name)
             failed.append(name)
 
@@ -85,26 +91,44 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     with connect(args.db) as conn:
         counters = record_run(conn, all_products)
-        new_promos = find_new_promotions(conn, cutoff_iso)
+        changes = find_changes(conn, cutoff_iso)
 
     log.info(
-        "Resumo: %d novos produtos, %d atualizados, %d quedas de preço, %d novas promoções",
-        counters["new"], counters["updated"], counters["price_drop"], counters["new_promo"],
+        "Resumo: %d novos produtos, %d atualizados, %d quedas, %d novas promo, "
+        "%d acabaram, %d enfraqueceram, %d subiram",
+        counters["new"], counters["updated"], counters["price_drop"],
+        len(changes["new_promo"]), len(changes["ended"]),
+        len(changes["weaker"]), len(changes["price_up"]),
     )
 
-    if new_promos:
-        print(f"\n=== {len(new_promos)} promoção(ões) NOVA(S) detectada(s) ===")
-        by_sku = {(p.source, p.sku): p for p in all_products}
-        for row in new_promos:
-            p = by_sku.get((row["source"], row["sku"]))
-            if p is not None:
-                _print_promo_row(p)
+    total_changes = sum(len(v) for v in changes.values())
+    if total_changes:
+        print(f"\n=== {total_changes} mudança(s) detectada(s) ({args.mode}) ===")
+        for cat, label in [
+            ("new_promo", "🆕 promo nova"),
+            ("ended", "🔚 acabou"),
+            ("weaker", "📉 enfraqueceu"),
+            ("price_up", "📈 subiu"),
+        ]:
+            for row in changes[cat]:
+                pct = (int(round((1 - row["price"] / row["list_price"]) * 100))
+                       if row["list_price"] else 0)
+                print(f"  [{row['source']:8}] {label:18} "
+                      f"{row['name'][:45]:45} "
+                      f"{_fmt_brl(row['price'])} (de {_fmt_brl(row['list_price'])}) "
+                      f"-{pct}%  {row['url']}")
     else:
-        print("\nNenhuma promoção nova nesta execução.")
+        print("\nNenhuma mudança nesta execução.")
 
-    if not args.no_telegram and new_promos:
+    if not args.no_telegram and total_changes:
         try:
-            send_promotions(new_promos, dry_run=args.dry_run_telegram)
+            if args.mode == "digest":
+                period = (now - timedelta(hours=args.digest_hours)).strftime("%d/%m %Hh")
+                period_label = f"últimas {args.digest_hours}h (desde {period})"
+                send_digest(changes, period_label=period_label,
+                            dry_run=args.dry_run_telegram)
+            else:
+                send_alert(changes, dry_run=args.dry_run_telegram)
         except TelegramConfigError as e:
             log.warning("Telegram não configurado: %s", e)
         except Exception:
@@ -171,10 +195,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("-v", "--verbose", action="store_true")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_run = sub.add_parser("run", help="roda scrapers e detecta promoções novas")
+    p_run = sub.add_parser("run", help="roda scrapers e detecta mudanças")
     p_run.add_argument(
         "--sources", nargs="+", choices=list(SCRAPERS),
         help="fontes a rodar (default: todas)",
+    )
+    p_run.add_argument(
+        "--mode", choices=["alert", "digest"], default="alert",
+        help="alert: notifica só o que mudou nesta execução (default). "
+             "digest: agrupa últimas 24h em 4 seções (use 1×/dia).",
+    )
+    p_run.add_argument(
+        "--digest-hours", type=int, default=24,
+        help="janela de horas para o modo digest (default: 24)",
     )
     p_run.add_argument("--no-telegram", action="store_true",
                        help="não enviar notificação Telegram nesta execução")
