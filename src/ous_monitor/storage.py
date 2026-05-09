@@ -145,15 +145,24 @@ DISCOUNT_SHRINK_RATIO = 0.25  # desconto % encolheu em 25%+ relativo dispara "en
 
 
 def _ranked_with_prev(since: str) -> str:
-    """SQL fragment: pega cada observação >= `since` com a observação anterior do mesmo SKU."""
+    """SQL fragment: para cada SKU, retorna SUA observação MAIS RECENTE (se ela
+    cair dentro da janela `since`) com a observação imediatamente anterior do
+    mesmo SKU como `prev_*`.
+
+    Importante: queremos no máximo 1 linha por SKU. Sem isso, executar com
+    janela de 24h numa série temporal de 4 snapshots faria o produto disparar
+    em 3 linhas, multiplicando notificações.
+    """
     return """
         WITH ranked AS (
             SELECT source, sku, observed_at, list_price, price, sizes, stock_qty,
                    LAG(price)      OVER w AS prev_price,
                    LAG(list_price) OVER w AS prev_list_price,
-                   LAG(observed_at) OVER w AS prev_observed_at
+                   LAG(observed_at) OVER w AS prev_observed_at,
+                   ROW_NUMBER() OVER w_desc AS rn
               FROM price_history
-             WINDOW w AS (PARTITION BY source, sku ORDER BY observed_at)
+             WINDOW w      AS (PARTITION BY source, sku ORDER BY observed_at),
+                    w_desc AS (PARTITION BY source, sku ORDER BY observed_at DESC)
         )
         SELECT p.source, p.sku, p.name, p.url, p.image,
                r.list_price, r.price, r.observed_at,
@@ -161,7 +170,8 @@ def _ranked_with_prev(since: str) -> str:
                r.sizes, r.stock_qty
           FROM ranked r
           JOIN products p USING (source, sku)
-         WHERE r.observed_at >= ?
+         WHERE r.rn = 1            -- só a observação mais recente do SKU
+           AND r.observed_at >= ?  -- e ela precisa ter caído na janela
     """
 
 
