@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import unicodedata
 from html import escape
 from typing import Iterable, List, Optional
 
@@ -24,9 +26,41 @@ API_BASE = "https://api.telegram.org"
 MAX_MSG_CHARS = 3800  # margem de segurança vs 4096 do Telegram
 TIMEOUT_S = 15.0
 
+# Filtro de tênis por tamanho do usuário. Tamanhos aceitos como string
+# exata no CSV `sizes`. Camisetas/calças não são afetadas.
+SHOE_SIZES_WANTED = {"42", "43"}
+
 
 class TelegramConfigError(RuntimeError):
     pass
+
+
+def _is_tenis(name: str) -> bool:
+    """True se o nome do produto descreve um tênis (acento-insensitive)."""
+    norm = unicodedata.normalize("NFD", name).encode("ascii", "ignore").decode().lower()
+    return bool(re.search(r"\btenis\b", norm))
+
+
+def _row_passes_size_filter(row) -> bool:
+    """Aplica regra de tamanhos do usuário:
+       - Não-tênis: passa direto.
+       - Tênis com sizes vazio (ex: Centauro não expõe na listagem): passa
+         (melhor mostrar e o usuário checa do que perder).
+       - Tênis com sizes preenchidos: precisa ter 42 ou 43 disponível.
+    """
+    if not _is_tenis(row["name"] or ""):
+        return True
+    sizes_csv = row["sizes"]
+    if not sizes_csv:
+        return True
+    sizes_set = {s.strip() for s in sizes_csv.split(",") if s.strip()}
+    return bool(sizes_set & SHOE_SIZES_WANTED)
+
+
+def _filter_changes(changes: dict) -> dict:
+    """Aplica filtro de tamanhos a cada categoria. Retorna novo dict."""
+    return {cat: [r for r in rows if _row_passes_size_filter(r)]
+            for cat, rows in changes.items()}
 
 
 def _fmt_brl(v) -> str:
@@ -271,8 +305,13 @@ def send_alert(changes: dict, *, bot_token=None, chat_id=None, dry_run=False) ->
     `changes` é o dict retornado por storage.find_changes (chaves: new_promo,
     ended, weaker, price_up). Retorna nº de mensagens enviadas (0 se nada).
     """
+    raw_total = sum(len(v) for v in changes.values())
+    changes = _filter_changes(changes)
     counts = {k: len(v) for k, v in changes.items()}
     total = sum(counts.values())
+    filtered_out = raw_total - total
+    if filtered_out:
+        log.info("Telegram: %d tênis filtrado(s) por não ter 42/43 disponível.", filtered_out)
     if total == 0:
         log.info("Telegram: nenhuma mudança para notificar.")
         return 0
@@ -306,8 +345,13 @@ def send_alert(changes: dict, *, bot_token=None, chat_id=None, dry_run=False) ->
 def send_digest(changes: dict, *, period_label: str = "hoje",
                 bot_token=None, chat_id=None, dry_run=False) -> int:
     """Modo digest: 4 seções separadas com totais. Pensado para 1×/dia."""
+    raw_total = sum(len(v) for v in changes.values())
+    changes = _filter_changes(changes)
     counts = {k: len(v) for k, v in changes.items()}
     total = sum(counts.values())
+    filtered_out = raw_total - total
+    if filtered_out:
+        log.info("Telegram digest: %d tênis filtrado(s) por não ter 42/43.", filtered_out)
     if total == 0:
         log.info("Telegram digest: nada a notificar para %s.", period_label)
         return 0
