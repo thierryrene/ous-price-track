@@ -1,0 +1,69 @@
+name: monitor
+
+on:
+  schedule:
+    # 12:00 e 21:00 UTC (= 09:00 e 18:00 em BRT, UTC-3)
+    - cron: "0 12,21 * * *"
+  workflow_dispatch: {}
+
+# Garante que dois runs simultâneos não tentem commitar o DB ao mesmo tempo.
+concurrency:
+  group: monitor
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout (precisa do histórico para commit)
+        uses: actions/checkout@v4
+        with:
+          # Usa GITHUB_TOKEN; precisa de write porque vamos commitar o DB.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Instalar dependências
+        # Apenas o que é usado por OUS+Netshoes. Playwright fica de fora —
+        # Centauro está atrás de Akamai e bloqueia IPs Azure dos runners.
+        run: |
+          python -m pip install --upgrade pip
+          pip install "httpx>=0.27,<0.28" "selectolax>=0.3.21"
+
+      - name: Capturar revisão do DB antes do run
+        id: db_before
+        run: |
+          if [ -f data/prices.db ]; then
+            echo "hash=$(sha256sum data/prices.db | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          else
+            echo "hash=missing" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Rodar monitor (OUS + Netshoes; Centauro pulada)
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          PYTHONPATH=src python -m ous_monitor.cli run --sources ous netshoes
+
+      - name: Commitar DB se houve mudança
+        run: |
+          new_hash=$(sha256sum data/prices.db | cut -d' ' -f1)
+          if [ "$new_hash" = "${{ steps.db_before.outputs.hash }}" ]; then
+            echo "DB inalterado — nada a commitar."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/prices.db
+          git commit -m "chore(data): snapshot $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push

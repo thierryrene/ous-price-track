@@ -74,11 +74,45 @@ ous-monitor -v run
 
 Banco SQLite em `data/prices.db` (override com `--db /caminho/outro.db`).
 
-## Cron (rodar 1x/dia às 9h)
+## Execução automatizada
+
+### GitHub Actions (recomendado)
+
+O workflow [.github/workflows/monitor.yml](.github/workflows/monitor.yml) roda
+o scraper 2× ao dia (12h e 21h UTC = 9h e 18h BRT) e commita o
+`data/prices.db` atualizado de volta no repo — assim o histórico persiste
+entre execuções.
+
+Setup único:
+
+1. **Crie um bot Telegram** novo via `@BotFather` (ou reuse o atual).
+2. No GitHub, vá em `Settings → Secrets and variables → Actions → New repository secret`
+   e crie:
+   - `TELEGRAM_BOT_TOKEN` — token do bot
+   - `TELEGRAM_CHAT_ID` — id do chat onde notificar
+3. Commite o `data/prices.db` inicial (gerado pelo primeiro run local). Sem
+   isso, o primeiro run no Actions vai notificar todas as ~263 promos atuais
+   de uma vez. Para evitar:
+
+   ```bash
+   PYTHONPATH=src python -m ous_monitor.cli run --no-telegram
+   git add data/prices.db
+   git commit -m "chore(data): snapshot inicial"
+   git push
+   ```
+
+4. Dispare manualmente no GitHub: `Actions → monitor → Run workflow`.
+
+**Centauro não é executada no Actions** — IPs dos runners GitHub são
+agressivamente bloqueados pelo Akamai. O workflow chama
+`run --sources ous netshoes`. Para incluir Centauro, rode local com proxy
+ou mantenha um cron paralelo na sua máquina.
+
+### Cron local (alternativa)
 
 ```cron
 0 9 * * * cd /home/thierry/Desktop/web_testes/ous-price-monitor && \
-  .venv/bin/python -m ous_monitor.cli run >> data/run.log 2>&1
+  PYTHONPATH=src .venv/bin/python -m ous_monitor.cli run >> data/run.log 2>&1
 ```
 
 ## Como funciona a detecção de promoção nova
