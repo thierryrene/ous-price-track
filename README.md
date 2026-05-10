@@ -45,6 +45,12 @@ O CLI tem dois modos de envio (flag `--mode`):
 No GitHub Actions a manhã (12h UTC) roda `alert` e a tarde (21h UTC) roda
 `digest`, te dando um resumo consolidado no fim do dia.
 
+Há ainda o subcomando **`snapshot`** (workflow `snapshot.yml`, só manual):
+roda os scrapers e envia um digest com **todos os produtos atualmente em
+promoção** — útil pra "varrer o catálogo agora" sem esperar pelo cron.
+Mantém o filtro de tamanhos 42/43, mas ignora o filtro "já notifiquei isso
+no run anterior".
+
 Como obter as credenciais:
 
 1. Fale com `@BotFather` no Telegram → `/newbot` → copie o TOKEN.

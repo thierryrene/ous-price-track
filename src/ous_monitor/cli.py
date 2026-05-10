@@ -1,7 +1,10 @@
 """CLI principal do ous-price-monitor.
 
 Subcomandos:
-  run        — roda os scrapers, persiste resultados, imprime promoções novas
+  run        — roda os scrapers, persiste resultados, notifica MUDANÇAS
+               (promo nova / acabou / piorou / subiu) desde a última janela
+  snapshot   — roda os scrapers, persiste, notifica TUDO em promoção agora
+               (ignora 'já notificou'; mantém filtro 42/43 para tênis)
   report     — mostra promoções novas desde uma data sem rodar scraper
   list       — lista todos os produtos atualmente em promoção (snapshot mais recente)
 """
@@ -19,7 +22,10 @@ from .notifier import TelegramConfigError, send_alert, send_digest
 from .scrapers.centauro import CentauroScraper
 from .scrapers.netshoes import NetshoesScraper
 from .scrapers.ous import OusScraper
-from .storage import connect, find_changes, find_new_promotions, record_run
+from .storage import (
+    connect, find_changes, find_new_promotions, record_run,
+    snapshot_promotions,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DB = REPO_ROOT / "data" / "prices.db"
@@ -56,18 +62,10 @@ def _print_promo_row(p: Product) -> None:
     )
 
 
-def cmd_run(args: argparse.Namespace) -> int:
+def _scrape_and_persist(args: argparse.Namespace) -> tuple[list[Product], list[str], dict]:
+    """Roda os scrapers solicitados, persiste no DB, devolve (produtos, falhas, counters).
+    Compartilhado por cmd_run e cmd_snapshot."""
     sources = args.sources or list(SCRAPERS)
-    now = datetime.now(timezone.utc)
-    # Janela de detecção:
-    # - alert: últimos 10s (= o que foi inserido nesta execução)
-    # - digest: últimas 24h (consolida o dia inteiro de mudanças)
-    if args.mode == "digest":
-        cutoff_dt = now - timedelta(hours=args.digest_hours)
-    else:
-        cutoff_dt = now - timedelta(seconds=10)
-    cutoff_iso = cutoff_dt.isoformat(timespec="seconds")
-
     all_products: list[Product] = []
     failed: list[str] = []
     for name in sources:
@@ -85,12 +83,30 @@ def cmd_run(args: argparse.Namespace) -> int:
             log.exception(">>> %s: falhou", name)
             failed.append(name)
 
+    counters = {}
+    if all_products:
+        with connect(args.db) as conn:
+            counters = record_run(conn, all_products)
+    return all_products, failed, counters
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    now = datetime.now(timezone.utc)
+    # Janela de detecção:
+    # - alert: últimos 10s (= o que foi inserido nesta execução)
+    # - digest: últimas 24h (consolida o dia inteiro de mudanças)
+    if args.mode == "digest":
+        cutoff_dt = now - timedelta(hours=args.digest_hours)
+    else:
+        cutoff_dt = now - timedelta(seconds=10)
+    cutoff_iso = cutoff_dt.isoformat(timespec="seconds")
+
+    all_products, failed, counters = _scrape_and_persist(args)
     if not all_products:
         log.warning("Nenhum produto coletado. Encerrando.")
         return 1 if failed else 0
 
     with connect(args.db) as conn:
-        counters = record_run(conn, all_products)
         changes = find_changes(conn, cutoff_iso)
 
     log.info(
@@ -129,6 +145,52 @@ def cmd_run(args: argparse.Namespace) -> int:
                             dry_run=args.dry_run_telegram)
             else:
                 send_alert(changes, dry_run=args.dry_run_telegram)
+        except TelegramConfigError as e:
+            log.warning("Telegram não configurado: %s", e)
+        except Exception:
+            log.exception("Falha ao enviar Telegram (continuando).")
+
+    return 1 if failed and not all_products else 0
+
+
+def cmd_snapshot(args: argparse.Namespace) -> int:
+    """Roda scrapers, persiste no DB, e manda um digest com TODOS os produtos
+    em promoção agora — independente de já terem sido notificados.
+    O filtro de tamanhos (42/43 pra tênis) continua valendo.
+    """
+    now = datetime.now(timezone.utc)
+    all_products, failed, counters = _scrape_and_persist(args)
+    if not all_products:
+        log.warning("Nenhum produto coletado. Encerrando.")
+        return 1 if failed else 0
+
+    with connect(args.db) as conn:
+        changes = snapshot_promotions(conn)
+
+    total = len(changes["new_promo"])
+    log.info(
+        "Snapshot: %d novos produtos, %d atualizados; %d em promoção agora.",
+        counters.get("new", 0), counters.get("updated", 0), total,
+    )
+
+    if total == 0:
+        print("\nNenhum produto em promoção no momento.")
+        return 0
+
+    print(f"\n=== {total} produto(s) em promoção (snapshot completo) ===")
+    for row in changes["new_promo"]:
+        pct = (int(round((1 - row["price"] / row["list_price"]) * 100))
+               if row["list_price"] else 0)
+        print(f"  [{row['source']:8}] "
+              f"{row['name'][:55]:55} "
+              f"{_fmt_brl(row['price'])} (de {_fmt_brl(row['list_price'])}) "
+              f"-{pct}%  {row['url']}")
+
+    if not args.no_telegram:
+        try:
+            label = now.strftime("snapshot %d/%m %Hh UTC")
+            send_digest(changes, period_label=label,
+                        dry_run=args.dry_run_telegram)
         except TelegramConfigError as e:
             log.warning("Telegram não configurado: %s", e)
         except Exception:
@@ -214,6 +276,19 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--dry-run-telegram", action="store_true",
                        help="formata as mensagens Telegram e loga em vez de enviar")
     p_run.set_defaults(func=cmd_run)
+
+    p_snap = sub.add_parser(
+        "snapshot",
+        help="roda scrapers e envia digest com TODOS os produtos em promoção "
+             "agora (ignora 'já notificou', mantém filtro 42/43)",
+    )
+    p_snap.add_argument(
+        "--sources", nargs="+", choices=list(SCRAPERS),
+        help="fontes a rodar (default: todas)",
+    )
+    p_snap.add_argument("--no-telegram", action="store_true")
+    p_snap.add_argument("--dry-run-telegram", action="store_true")
+    p_snap.set_defaults(func=cmd_snapshot)
 
     p_rep = sub.add_parser("report", help="lista promoções novas detectadas no histórico")
     p_rep.add_argument("--days", type=int, default=1, help="janela em dias (default: 1)")

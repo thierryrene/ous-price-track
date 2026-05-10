@@ -259,3 +259,37 @@ def find_changes(conn: sqlite3.Connection, since: str) -> dict:
 def find_new_promotions(conn: sqlite3.Connection, since: str) -> list:
     """Backwards-compatible wrapper — retorna só a categoria new_promo."""
     return find_changes(conn, since)["new_promo"]
+
+
+def snapshot_promotions(conn: sqlite3.Connection) -> dict:
+    """Retorna TODOS os produtos atualmente em promoção (último snapshot por SKU),
+    no mesmo formato de `find_changes` — todos sob a categoria 'new_promo'.
+
+    Diferente de find_changes: ignora a janela temporal e o estado anterior.
+    Pensado pro subcomando `snapshot`, que dá o panorama completo do dia
+    independentemente de "já foi notificado".
+
+    As linhas têm prev_price=NULL (compatível com formatador) e mantêm os
+    mesmos nomes de colunas que o resto do pipeline espera.
+    """
+    rows = list(conn.execute("""
+        WITH latest AS (
+            SELECT source, sku, list_price, price, sizes, stock_qty, observed_at,
+                   ROW_NUMBER() OVER (PARTITION BY source, sku
+                                      ORDER BY observed_at DESC) AS rn
+              FROM price_history
+        )
+        SELECT p.source, p.sku, p.name, p.url, p.image,
+               l.list_price, l.price, l.observed_at,
+               NULL AS prev_price,
+               NULL AS prev_list_price,
+               NULL AS prev_observed_at,
+               l.sizes, l.stock_qty
+          FROM latest l
+          JOIN products p USING (source, sku)
+         WHERE l.rn = 1
+           AND l.list_price IS NOT NULL
+           AND l.list_price > l.price
+         ORDER BY (1.0 - l.price / l.list_price) DESC, p.source, p.name
+    """))
+    return {"new_promo": rows, "ended": [], "weaker": [], "price_up": []}
