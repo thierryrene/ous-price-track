@@ -1,8 +1,8 @@
 # ous-price-monitor
 
-Monitor diário de promoções da marca **ÖUS** (calçados). Varre 3 fontes, guarda
-histórico de preços em SQLite e relata produtos que **entraram em promoção**
-desde a última execução.
+Monitor diário de promoções das marcas **ÖUS**, **BaW Clothing** e **Adidas**
+(Adidas só no Clube Netshoes). Varre 6 fontes, guarda histórico de preços em
+SQLite e relata produtos que **entraram em promoção** desde a última execução.
 
 ## Fontes
 
@@ -11,6 +11,9 @@ desde a última execução.
 | `ous` | `ous.com.br/garimpo` (outlet oficial) | API VTEX pública (`catalog_system/pub/products/search`) | ✅ ~144 produtos |
 | `netshoes` | `clube.netshoes.com.br/busca?q=ous&marca=ous` (preço de assinante) | HTML + parse de `window.__INITIAL_STATE__` | ✅ ~204 produtos |
 | `centauro` | `centauro.com.br/busca/ous` | Playwright headless + parse de `__NEXT_DATA__` | ⚠️ Akamai BMP — frequentemente bloqueia. Não derruba o pipeline (loga warning e segue). |
+| `baw` | `bawclothing.com.br/roupas/?pagina=N&tamanho=24` (catálogo completo) | HTML SSR Wake/FBits — combina JSON-LD `ItemList` com dataLayer `Hotsite products` (match por item_id no slug) | ✅ ~587 produtos |
+| `netshoes_baw` | `clube.netshoes.com.br/busca?marca=baw-clothing` | Mesma estratégia da fonte `netshoes`, filtrando por marca BaW Clothing | ✅ ~50 produtos |
+| `netshoes_adidas` | `clube.netshoes.com.br/busca?marca=adidas` | Mesma estratégia da fonte `netshoes`, filtrando por marca Adidas. **Catálogo grande**: ~164 páginas, ~4min de scraping; não inclui Adidas Originals (linha separada) | ✅ ~6900 produtos |
 
 ## Setup
 

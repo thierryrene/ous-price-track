@@ -4,9 +4,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Daily monitor of the ÖUS footwear brand. Scrapes three retailers, stores price
-history in SQLite, and reports newly-discounted products. Designed to run once
-per day from cron on a personal Linux machine.
+Daily monitor de marcas de streetwear/calçado: **ÖUS**, **BaW Clothing** e
+**Adidas** (Adidas só no Clube Netshoes). Scrapes cada marca da loja própria
+(quando aplicável) + retailers marketplace, stores price history em SQLite,
+e reports newly-discounted products. Designed to run once per day from cron
+on a personal Linux machine.
+
+Active sources (keys in `cli.SCRAPERS`):
+
+- `ous` — ous.com.br/garimpo (outlet oficial ÖUS, VTEX)
+- `netshoes` — clube.netshoes.com.br filtrado por marca ÖUS
+- `centauro` — centauro.com.br marca ÖUS (Playwright, frequentemente bloqueado)
+- `baw` — bawclothing.com.br (catálogo completo BaW, plataforma Wake/FBits)
+- `netshoes_baw` — clube.netshoes.com.br filtrado por marca BaW Clothing
+- `netshoes_adidas` — clube.netshoes.com.br filtrado por marca Adidas (~6900 itens,
+  ~164 páginas, ~4min de scraping; NÃO inclui Adidas Originals)
+
+Cada par (loja, marca) é uma source distinta — não há coluna `brand` no DB,
+quem segrega marca dentro do mesmo retailer é o `source_name`. `NetshoesScraper`
+é parametrizado por marca; `NetshoesBawScraper` é só uma factory que devolve
+uma instância configurada para `marca=baw-clothing` com source `netshoes_baw`.
 
 ## Commands
 
@@ -30,8 +47,8 @@ There is no test suite yet. To validate a scraper change, run it standalone:
 
 ```bash
 PYTHONPATH=src python -c "
-from ous_monitor.scrapers.netshoes import NetshoesScraper
-ps = NetshoesScraper().fetch_all()
+from ous_monitor.scrapers.baw import BawScraper
+ps = BawScraper().fetch_all()
 print(len(ps), 'products,', sum(1 for p in ps if p.has_discount), 'on sale')
 "
 ```
@@ -40,8 +57,8 @@ print(len(ps), 'products,', sum(1 for p in ps if p.has_discount), 'on sale')
 
 Three layers, all under `src/ous_monitor/`:
 
-1. **Scrapers** (`scrapers/{ous,netshoes,centauro}.py`) — each implements the
-   `Scraper` protocol from `scrapers/base.py`: a `source` string and a
+1. **Scrapers** (`scrapers/{ous,netshoes,centauro,baw}.py`) — each implements
+   the `Scraper` protocol from `scrapers/base.py`: a `source` string and a
    `fetch_all() -> list[Product]` method. Each scraper is responsible for its
    own pagination and **must walk all pages** (not just the first viewport's
    worth — see "Pagination contract" below).
@@ -76,20 +93,44 @@ storage. Add a field there if a new piece of data needs to flow through.
 **Every scraper must paginate fully.** This is a hard requirement, not a nice-to-have. Each scraper logs the server-declared total on the first page and continues fetching until the source signals exhaustion. Concretely:
 
 - **OUS** (`scrapers/ous.py`): VTEX returns `206 Partial Content` and a `resources: X-Y/TOTAL` header. Loop `_from`/`_to` by 50 until `start >= total`. ~3 pages.
-- **Netshoes** (`scrapers/netshoes.py`): `__INITIAL_STATE__.SearchPage.totalPages` indicates total pages; loop `?page=N` until reached. ~5 pages.
+- **Netshoes** (`scrapers/netshoes.py`): `__INITIAL_STATE__.SearchPage.totalPages` indicates total pages; loop `?page=N` until reached. Produtos ficam em `SearchPage.parentSkus` (não `products`). ~5 pages (ÖUS), ~2 pages (BaW Clothing), ~164 pages (Adidas — bem mais lento, ~4min com o delay de 1.5s).
 - **Centauro** (`scrapers/centauro.py`): `__NEXT_DATA__` exposes `pagination.last.pageNumber`; loop `?page=N` reusing the same Playwright context. ~6 pages.
+- **BaW** (`scrapers/baw.py`): JSON-LD `ItemList.numberOfItems` declara o total; loop `?pagina=N&tamanho=24` até cobrir o total. **Pegadinha crítica**: passar apenas `?pagina=N` é silenciosamente ignorado e devolve sempre a pg 1 — só com `tamanho` junto a paginação destrava. ~25 páginas.
 
 If you change a scraper, verify the log line `"<source>: total declarado = ..."` matches the count of products actually returned.
 
 ## Site-specific gotchas
 
 - **OUS**: `Discount` field in the JSON is always `null` — derive promotion from `ListPrice > Price`. Color variants are separate `productId`s. Size variants live inside `items[]` and share pricing, so `items[0]` is enough.
-- **Netshoes**: prices are integers in **cents** — divide by 100. Brand string is `"ÖUS"` with the umlaut, not `"OUS"`. Pagination is `?page=N`; `?p=N` is silently ignored. Search without `marca=ous` brings non-OUS marketplace items.
+- **Netshoes**: prices are integers in **cents** — divide by 100. Brand strings: ÖUS é `"ÖUS"` com umlaut (não `"OUS"`); BaW vem como `"BAW Clothing"` (slug `marca=baw-clothing`; `marca=baw` puro é outra marca genérica de 2 itens); Adidas é `"Adidas"` (slug `marca=adidas`; `marca=adidas-originals` é catalogada à parte com brand `"Adidas Originals"`, NÃO incluído em `netshoes_adidas`). Pagination is `?page=N`; `?p=N` is silently ignored. Search without `marca=...` brings non-target marketplace items.
 - **Centauro**: Akamai BMP. Plain HTTP requests (curl, httpx, even `curl_cffi`) return 403. The VTEX endpoints are also closed. Playwright headless with the system Chrome (`/usr/bin/google-chrome`) works for fresh IPs but the IP can get blocked for hours after a few requests. The scraper raises `CentauroBlocked` on 403 and `CentauroScraper.fetch_all` swallows it (logs a warning, returns `[]`) so one bad source never breaks the run. Do not loop with retries on 403 — it makes the IP block worse.
+- **BaW** (`scrapers/baw.py`): plataforma Wake/FBits (não VTEX — APIs `catalog_system` retornam 404). Dois blocos JSON SSR são combinados por `item_id` (sufixo numérico no slug da URL): JSON-LD `ItemList` traz url/imagem/nome/preço corrente, e o JS inline `{item_list_name:"Hotsite products"…}` traz o `discount`. **ATENÇÃO**: `discount` no dataLayer é o **valor absoluto em reais economizado**, NÃO o percentual — logo `list_price = price + discount` (interpretar como % daria preços absurdos tipo "camiseta de R$ 690"). NÃO pedir `br` em `Accept-Encoding`: httpx só decodifica brotli com o pacote opcional `brotli`/`brotlicffi` e o servidor BaW sempre escolhe br quando oferecido — restrito a `gzip, deflate`. Paginação exige `?pagina=N&tamanho=24` juntos (ver pagination contract acima).
 
 ## Storage location
 
 The default DB path is `<repo>/data/prices.db`. The `data/` directory is gitignored. For ad-hoc inspection: `sqlite3 data/prices.db ".schema"`.
+
+## Filtros de ingestão
+
+Vivem em [src/ous_monitor/filters.py](src/ous_monitor/filters.py) e são aplicados em `cli._scrape_and_persist` antes de `record_run`. Produtos rejeitados nunca entram no DB. **O DB é a fonte da verdade** — `notifier.py` e os subcomandos `list`/`report` confiam que o que está lá já passou pelo filtro.
+
+Dois critérios encadeados (gênero antes de tamanho, pra que o motivo do log seja determinístico):
+
+1. **Gênero/idade** (`gender.is_male_or_unisex`) — rejeita qualquer item cujo nome contém token feminino-exclusivo (`feminino`, `mulher`, `women`, `wmn`…), infantil/juvenil (`infantil`, `kids`, `junior`, `menina`, `bebe`, `baby`…), de maternidade, ou categoria feminina exclusiva (`calcinha`, `biquini`, `vestido`, `saia`…). Quando não há marcador algum, aceita (interpretação unissex). Vocabulário em [src/ous_monitor/gender.py](src/ous_monitor/gender.py).
+2. **Tamanho 42/43** (`passes_size_filter`) — só atua em itens cujo nome contém `\btênis\b` (acento-insensitive). Tênis com `sizes` preenchido precisa ter `"42"` ou `"43"`; tênis sem `sizes` (caso Centauro/BaW) passa direto (safety: melhor mostrar do que perder).
+
+Logs por source: `>>> netshoes: 163 produtos (207 brutos; -0 gênero/idade, -44 tamanho 42/43)`.
+
+Quando a vocabulary list mudar (ex.: adicionar token novo ao `_BLOCK_TOKENS`), o filtro só vale pra ingestões futuras — produtos antigos continuam no DB até rodar `purge`.
+
+### Subcomando `purge`
+
+Aplica os mesmos filtros sobre o DB existente, usando a última observação como referência. Default é **dry-run** (lista o que removeria); requer `--apply` pra deletar de fato. Operação em transação única; remove de `products` e `price_history` em cascata. Faça backup do `data/prices.db` antes (`cp data/prices.db data/prices.db.bak.$(date -u +%Y%m%dT%H%M%SZ)`).
+
+```bash
+PYTHONPATH=src python -m ous_monitor.cli purge          # dry-run
+PYTHONPATH=src python -m ous_monitor.cli purge --apply  # executa
+```
 
 ## Notifier
 
