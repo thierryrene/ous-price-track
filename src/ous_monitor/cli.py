@@ -179,6 +179,14 @@ def cmd_run(args: argparse.Namespace) -> int:
         except Exception:
             log.exception("Falha ao enviar Telegram (continuando).")
 
+    try:
+        from .html_generator import write_dashboard
+        log.info("Atualizando dashboard HTML em data/produtos.html...")
+        with connect(args.db) as conn:
+            write_dashboard(conn, REPO_ROOT / "data" / "produtos.html")
+    except Exception:
+        log.exception("Falha ao regerar dashboard HTML automaticamente (continuando).")
+
     return 1 if failed and not all_products else 0
 
 
@@ -224,6 +232,14 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
             log.warning("Telegram não configurado: %s", e)
         except Exception:
             log.exception("Falha ao enviar Telegram (continuando).")
+
+    try:
+        from .html_generator import write_dashboard
+        log.info("Atualizando dashboard HTML em data/produtos.html...")
+        with connect(args.db) as conn:
+            write_dashboard(conn, REPO_ROOT / "data" / "produtos.html")
+    except Exception:
+        log.exception("Falha ao regerar dashboard HTML automaticamente (continuando).")
 
     return 1 if failed and not all_products else 0
 
@@ -363,6 +379,15 @@ def cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_export_html(args: argparse.Namespace) -> int:
+    from .html_generator import write_dashboard
+    log.info("Gerando dashboard HTML interativo em %s...", args.output)
+    with connect(args.db) as conn:
+        write_dashboard(conn, args.output)
+    print(f"✔ Dashboard gerado com sucesso em: {args.output}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ous-monitor")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB, help="caminho do SQLite (default: data/prices.db)")
@@ -420,6 +445,16 @@ def main(argv: list[str] | None = None) -> int:
     p_purge.add_argument("--apply", action="store_true",
                          help="executa a deleção (caso contrário só mostra).")
     p_purge.set_defaults(func=cmd_purge)
+
+    p_html = sub.add_parser(
+        "export-html",
+        help="gera um dashboard HTML interativo e premium em data/produtos.html",
+    )
+    p_html.add_argument(
+        "--output", type=Path, default=REPO_ROOT / "data" / "produtos.html",
+        help="caminho do arquivo HTML gerado (default: data/produtos.html)",
+    )
+    p_html.set_defaults(func=cmd_export_html)
 
     args = parser.parse_args(argv)
     _setup_logging(args.verbose)
