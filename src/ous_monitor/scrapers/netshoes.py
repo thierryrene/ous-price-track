@@ -1,14 +1,20 @@
-"""Scraper para o Clube Netshoes (preços de assinante para a marca OUS).
+"""Scraper para o Clube Netshoes.
 
-Estratégia: clube.netshoes.com.br retorna 200 com User-Agent de browser.
-A listagem da marca está em /busca?q=ous&marca=ous&page=N (5 páginas, 42/pg,
-~204 produtos no total). Os dados completos vivem em window.__INITIAL_STATE__,
-um JSON ~316KB injetado no fim do HTML.
+Estratégia: clube.netshoes.com.br retorna 200 com User-Agent de browser. A
+listagem de uma marca está em /busca?q=<q>&marca=<slug>&page=N e os dados
+completos vivem em `window.__INITIAL_STATE__` (JSON injetado no HTML).
+
+Cada instância é parametrizada por marca — o mesmo código serve OUS, BaW,
+etc. — bastando passar `source_name`, `brand_query`, `brand_marca` e um
+`brand_matcher` que confirma a marca do produto retornado.
 
 Pegadinhas (descobertas na investigação):
-- A marca canônica é "ÖUS" (Ö com umlaut), não "OUS".
+- ÖUS: marca canônica tem Ö com umlaut; slug é `marca=ous`.
+- BaW Clothing: brand label vem como "BAW Clothing"; slug é `marca=baw-clothing`
+  (apenas `marca=baw` retorna outra marca "BAW" genérica com 2 itens).
 - Preços vêm em CENTAVOS como int — dividir por 100.
 - Paginação é ?page=N, NÃO ?p=N (este é silenciosamente ignorado).
+- Produtos ficam em `SearchPage.parentSkus` (não `SearchPage.products`).
 """
 from __future__ import annotations
 
@@ -16,7 +22,7 @@ import json
 import logging
 import re
 import time
-from typing import Iterator, List, Optional
+from typing import Callable, Iterator, List, Optional
 
 import httpx
 
@@ -26,10 +32,9 @@ log = logging.getLogger(__name__)
 
 BASE = "https://clube.netshoes.com.br"
 SEARCH_PATH = "/busca"
-SEARCH_PARAMS = {"q": "ous", "marca": "ous"}
 REQUEST_DELAY_S = 1.5
 TIMEOUT_S = 30.0
-MAX_PAGES_HARD_CAP = 20  # safety net; real total ~5
+MAX_PAGES_HARD_CAP = 200  # safety net (Adidas tem ~164 páginas; ÖUS ~5, BaW ~2)
 
 HEADERS = {
     "User-Agent": (
@@ -89,70 +94,124 @@ def _is_ous(brand: Optional[str]) -> bool:
     return brand.strip().upper().replace("Ö", "O") == "OUS"
 
 
-def _to_product(raw: dict) -> Optional[Product]:
-    if not _is_ous(raw.get("brand")):
-        return None
-    sale_cents = raw.get("salePrice")
-    if sale_cents is None:
-        return None
-    list_cents = raw.get("listPrice")
-    slug = raw.get("productSlug") or ""
-    url = (BASE + slug) if slug.startswith("/") else slug
-    sizes_raw = raw.get("sizes") or []
-    sizes = [str(s).strip() for s in sizes_raw if str(s).strip()]
-    return Product(
-        source="netshoes",
-        sku=str(raw.get("code") or raw.get("productCode") or ""),
-        name=raw.get("name") or "",
-        url=url,
-        image=raw.get("image"),
-        list_price=float(list_cents) / 100 if list_cents else None,
-        price=float(sale_cents) / 100,
-        available=bool(raw.get("available", True)),
-        brand=raw.get("brand"),
-        sizes=sizes,
-        stock_qty=None,  # Netshoes não expõe qty na listagem
-    )
+def _is_baw(brand: Optional[str]) -> bool:
+    if not brand:
+        return False
+    # Aceita "BAW Clothing", "BAW CLOTHING", "Baw Clothing" — mas rejeita
+    # "BAW" puro (que na Netshoes é outra marca genérica de 2 itens).
+    return brand.strip().upper() == "BAW CLOTHING"
 
 
-def _iter_pages(client: httpx.Client) -> Iterator[List[dict]]:
-    page = 1
-    total_pages: Optional[int] = None
-    while page <= MAX_PAGES_HARD_CAP:
-        params = {**SEARCH_PARAMS, "page": page}
-        resp = client.get(SEARCH_PATH, params=params)
-        resp.raise_for_status()
-        state = _extract_initial_state(resp.text)
-        if not state:
-            log.warning("Netshoes p%d: __INITIAL_STATE__ não encontrado", page)
-            return
-        search = (state.get("SearchPage") or {})
-        items = search.get("parentSkus") or []
-        if total_pages is None:
-            total_pages = search.get("totalPages")
-            log.info("Netshoes: total declarado = %s itens, %s páginas",
-                     search.get("total"), total_pages)
-        if not items:
-            return
-        yield items
-        if total_pages is not None and page >= total_pages:
-            return
-        page += 1
-        time.sleep(REQUEST_DELAY_S)
+def _is_adidas(brand: Optional[str]) -> bool:
+    if not brand:
+        return False
+    # Strict: aceita só "Adidas". "Adidas Originals" é catalogada como linha
+    # separada na Netshoes (marca=adidas-originals) e não vem em marca=adidas.
+    return brand.strip().upper() == "ADIDAS"
 
 
 class NetshoesScraper:
-    source = "netshoes"
+    """Scraper parametrizado por marca. Default = ÖUS (compat com versão antiga)."""
+
+    def __init__(
+        self,
+        source_name: str = "netshoes",
+        brand_query: str = "ous",
+        brand_marca: str = "ous",
+        brand_matcher: Callable[[Optional[str]], bool] = _is_ous,
+        brand_label: str = "OUS",
+    ):
+        self.source = source_name
+        self._params = {"q": brand_query, "marca": brand_marca}
+        self._matches_brand = brand_matcher
+        self._brand_label = brand_label
+
+    def _to_product(self, raw: dict) -> Optional[Product]:
+        if not self._matches_brand(raw.get("brand")):
+            return None
+        sale_cents = raw.get("salePrice")
+        if sale_cents is None:
+            return None
+        list_cents = raw.get("listPrice")
+        slug = raw.get("productSlug") or ""
+        url = (BASE + slug) if slug.startswith("/") else slug
+        sizes_raw = raw.get("sizes") or []
+        sizes = [str(s).strip() for s in sizes_raw if str(s).strip()]
+        return Product(
+            source=self.source,
+            sku=str(raw.get("code") or raw.get("productCode") or ""),
+            name=raw.get("name") or "",
+            url=url,
+            image=raw.get("image"),
+            list_price=float(list_cents) / 100 if list_cents else None,
+            price=float(sale_cents) / 100,
+            available=bool(raw.get("available", True)),
+            brand=raw.get("brand"),
+            sizes=sizes,
+            stock_qty=None,  # Netshoes não expõe qty na listagem
+        )
+
+    def _iter_pages(self, client: httpx.Client) -> Iterator[List[dict]]:
+        page = 1
+        total_pages: Optional[int] = None
+        while page <= MAX_PAGES_HARD_CAP:
+            resp = client.get(SEARCH_PATH, params={**self._params, "page": page})
+            resp.raise_for_status()
+            state = _extract_initial_state(resp.text)
+            if not state:
+                log.warning("%s p%d: __INITIAL_STATE__ não encontrado",
+                            self.source, page)
+                return
+            search = (state.get("SearchPage") or {})
+            items = search.get("parentSkus") or []
+            if total_pages is None:
+                total_pages = search.get("totalPages")
+                log.info("%s: total declarado = %s itens, %s páginas",
+                         self.source, search.get("total"), total_pages)
+            if not items:
+                return
+            yield items
+            if total_pages is not None and page >= total_pages:
+                return
+            page += 1
+            time.sleep(REQUEST_DELAY_S)
 
     def fetch_all(self) -> List[Product]:
         out: List[Product] = []
         with httpx.Client(
             base_url=BASE, headers=HEADERS, timeout=TIMEOUT_S, follow_redirects=True,
         ) as client:
-            for page_items in _iter_pages(client):
+            for page_items in self._iter_pages(client):
                 for raw in page_items:
-                    p = _to_product(raw)
+                    p = self._to_product(raw)
                     if p is not None:
                         out.append(p)
-        log.info("Netshoes: %d produtos OUS carregados", len(out))
+        log.info("%s: %d produtos %s carregados",
+                 self.source, len(out), self._brand_label)
         return out
+
+
+def NetshoesBawScraper() -> NetshoesScraper:
+    """Factory: Clube Netshoes filtrado por BaW Clothing."""
+    return NetshoesScraper(
+        source_name="netshoes_baw",
+        brand_query="baw",
+        brand_marca="baw-clothing",
+        brand_matcher=_is_baw,
+        brand_label="BAW Clothing",
+    )
+
+
+def NetshoesAdidasScraper() -> NetshoesScraper:
+    """Factory: Clube Netshoes filtrado por Adidas (linha regular).
+
+    Catálogo grande (~6900 itens, ~164 páginas). NÃO inclui Adidas Originals,
+    que é catalogada à parte (marca=adidas-originals, ~92 itens).
+    """
+    return NetshoesScraper(
+        source_name="netshoes_adidas",
+        brand_query="adidas",
+        brand_marca="adidas",
+        brand_matcher=_is_adidas,
+        brand_label="Adidas",
+    )
