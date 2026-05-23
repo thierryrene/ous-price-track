@@ -448,17 +448,23 @@ HTML_TEMPLATE = """<!doctype html>
       border-radius: 50%;
     }
 
-    /* Filtro de Tamanhos Avançado */
+    /* Filtro de Tamanhos Avançado e Compacto */
     .sizes-scroll-container {
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 10px;
     }
 
-    .sizes-grid {
+    .size-filter-compact-row {
       display: flex;
+      gap: 12px;
+      align-items: center;
       flex-wrap: wrap;
-      gap: 6px;
+    }
+
+    .fav-sizes-buttons {
+      display: flex;
+      gap: 8px;
     }
 
     .size-btn {
@@ -510,6 +516,112 @@ HTML_TEMPLATE = """<!doctype html>
       border-color: #ff793f;
       color: #fff;
       box-shadow: 0 0 8px rgba(255, 159, 67, 0.4);
+    }
+
+    .toggle-sizes-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--bg-control);
+      border: 1px solid var(--border-color);
+      color: var(--text-muted);
+      padding: 8px 14px;
+      font-size: 12px;
+      font-weight: 600;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: var(--transition-base);
+    }
+
+    .toggle-sizes-btn:hover {
+      border-color: var(--border-hover);
+      color: #fff;
+    }
+
+    .toggle-sizes-btn.panel-open {
+      background: rgba(255, 255, 255, 0.05);
+      border-color: var(--border-hover);
+      color: #fff;
+    }
+
+    .caret-icon {
+      transition: transform 0.3s ease;
+    }
+
+    .toggle-sizes-btn.panel-open .caret-icon {
+      transform: rotate(180deg);
+    }
+
+    #all-sizes-panel {
+      max-height: 0;
+      opacity: 0;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    #all-sizes-panel.open {
+      max-height: 240px;
+      opacity: 1;
+      background: rgba(18, 22, 33, 0.4);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 14px;
+      margin-top: 4px;
+    }
+
+    .sizes-panel-tabs {
+      display: flex;
+      gap: 6px;
+      border-bottom: 1px solid var(--border-color);
+      padding-bottom: 8px;
+    }
+
+    .size-tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-dim);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      transition: var(--transition-base);
+    }
+
+    .size-tab-btn:hover {
+      color: var(--text-main);
+    }
+
+    .size-tab-btn.active {
+      background: var(--bg-control);
+      color: var(--primary);
+      box-shadow: inset 0 0 0 1px var(--border-color);
+    }
+
+    .sizes-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      overflow-y: auto;
+      max-height: 120px;
+      padding-right: 4px;
+    }
+
+    /* Estilização da scrollbar da grade de tamanhos */
+    .sizes-grid::-webkit-scrollbar {
+      width: 4px;
+    }
+    .sizes-grid::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .sizes-grid::-webkit-scrollbar-thumb {
+      background: var(--border-color);
+      border-radius: 2px;
     }
 
     /* Filtro de Desconto Mínimo */
@@ -1117,11 +1229,31 @@ HTML_TEMPLATE = """<!doctype html>
         </div>
       </div>
 
-      <!-- Grade de Tamanhos Premium -->
+      <!-- Grade de Tamanhos Premium e Compacta -->
       <div class="sizes-scroll-container">
-        <div class="filter-group-title">Tamanhos Disponíveis (Destaque para favoritos Thierry ⭐)</div>
-        <div class="sizes-grid" id="sizes-filters-grid">
-          <!-- Gerado via JS -->
+        <div class="filter-group-title">Filtro de Tamanho</div>
+        <div class="size-filter-compact-row">
+          <!-- Favoritos sempre visíveis -->
+          <div class="fav-sizes-buttons" id="fav-sizes-container">
+            <!-- Gerado via JS para destacar os favoritos da pessoa -->
+          </div>
+          
+          <!-- Botão para abrir os outros -->
+          <button id="toggle-all-sizes-btn" class="toggle-sizes-btn">
+            Mais Tamanhos
+            <svg class="caret-icon" width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+          </button>
+        </div>
+
+        <!-- Painel expansível de outros tamanhos -->
+        <div id="all-sizes-panel">
+          <div class="sizes-panel-tabs">
+            <button class="size-tab-btn active" data-tab="sneakers" id="tab-sneakers-btn">Calçados (34-46)</button>
+            <button class="size-tab-btn" data-tab="clothing" id="tab-clothing-btn">Vestuário (P-GG / Único)</button>
+          </div>
+          <div class="sizes-grid" id="sizes-filters-grid">
+            <!-- Outros tamanhos gerados dinamicamente via JS -->
+          </div>
         </div>
       </div>
     </div>
@@ -1272,6 +1404,16 @@ HTML_TEMPLATE = """<!doctype html>
       const catalogContainer = document.getElementById('catalog-container');
       const discButtons = document.querySelectorAll('.disc-btn');
       
+      // Elementos adicionais do DOM para tamanhos compactos
+      const favSizesContainer = document.getElementById('fav-sizes-container');
+      const toggleAllSizesBtn = document.getElementById('toggle-all-sizes-btn');
+      const allSizesPanel = document.getElementById('all-sizes-panel');
+      const tabSneakersBtn = document.getElementById('tab-sneakers-btn');
+      const tabClothingBtn = document.getElementById('tab-clothing-btn');
+
+      // Estado local de tamanho
+      state.activeSizeTab = 'sneakers';
+
       // Chart.js local instance
       let priceChartInstance = null;
 
@@ -1294,15 +1436,48 @@ HTML_TEMPLATE = """<!doctype html>
         sourceFiltersList.appendChild(label);
       });
 
-      // Gerar botões de Tamanhos
-      sortedSizes.forEach(size => {
-        const isFav = (size === '42' || size === '43');
-        const btn = document.createElement('div');
-        btn.className = `size-btn ${isFav ? 'fav' : ''}`;
-        btn.dataset.size = size;
-        btn.textContent = size;
-        sizesFiltersGrid.appendChild(btn);
-      });
+      // Helper para classificar tamanhos
+      function isNumericSize(size) {
+        return /^\d+(\.\d+)?$/.test(size);
+      }
+
+      // Função para renderizar a lista de botões de tamanho
+      function renderSizesFilters() {
+        favSizesContainer.innerHTML = '';
+        sizesFiltersGrid.innerHTML = '';
+
+        // 1. Renderizar Favoritos (42 e 43)
+        const favs = ['42', '43'];
+        favs.forEach(sz => {
+          if (sortedSizes.includes(sz)) {
+            const btn = document.createElement('div');
+            btn.className = `size-btn fav ${state.activeSize === sz ? 'active' : ''}`;
+            btn.dataset.size = sz;
+            btn.textContent = `⭐ ${sz}`;
+            favSizesContainer.appendChild(btn);
+          }
+        });
+
+        // 2. Renderizar os outros tamanhos na aba ativa
+        sortedSizes.forEach(size => {
+          if (size === '42' || size === '43') return;
+
+          const isNumeric = isNumericSize(size);
+          const shouldRender = (state.activeSizeTab === 'sneakers' && isNumeric) ||
+                               (state.activeSizeTab === 'clothing' && !isNumeric);
+
+          if (shouldRender) {
+            const btn = document.createElement('div');
+            btn.className = `size-btn ${state.activeSize === size ? 'active' : ''}`;
+            btn.dataset.size = size;
+            btn.textContent = size;
+            sizesFiltersGrid.appendChild(btn);
+          }
+        });
+      }
+
+      // Inicializa a renderização dos filtros de tamanho
+      renderSizesFilters();
 
       // Formatador de Moeda
       function fmtBRL(val) {
@@ -1551,23 +1726,45 @@ HTML_TEMPLATE = """<!doctype html>
         }
       });
 
-      // Eventos: Tamanhos
-      sizesFiltersGrid.addEventListener('click', (e) => {
+      // Handler de clique unificado para tamanho
+      function handleSizeClick(e) {
         if (e.target.classList.contains('size-btn')) {
           const size = e.target.dataset.size;
           if (state.size === size) {
             state.size = null;
             state.activeSize = null;
-            e.target.classList.remove('active');
           } else {
-            // Limpa o anterior
-            sizesFiltersGrid.querySelectorAll('.size-btn').forEach(b => b.classList.remove('active'));
             state.size = size;
             state.activeSize = size;
-            e.target.classList.add('active');
           }
+          renderSizesFilters();
           render();
         }
+      }
+
+      // Eventos: Tamanhos
+      favSizesContainer.addEventListener('click', handleSizeClick);
+      sizesFiltersGrid.addEventListener('click', handleSizeClick);
+
+      // Evento: Abas de tamanho
+      tabSneakersBtn.addEventListener('click', () => {
+        tabSneakersBtn.classList.add('active');
+        tabClothingBtn.classList.remove('active');
+        state.activeSizeTab = 'sneakers';
+        renderSizesFilters();
+      });
+
+      tabClothingBtn.addEventListener('click', () => {
+        tabClothingBtn.classList.add('active');
+        tabSneakersBtn.classList.remove('active');
+        state.activeSizeTab = 'clothing';
+        renderSizesFilters();
+      });
+
+      // Evento: Abrir/Fechar painel de outros tamanhos
+      toggleAllSizesBtn.addEventListener('click', () => {
+        const isOpen = allSizesPanel.classList.toggle('open');
+        toggleAllSizesBtn.classList.toggle('panel-open', isOpen);
       });
 
       // Eventos: Faixas de Desconto
@@ -1594,7 +1791,7 @@ HTML_TEMPLATE = """<!doctype html>
         discButtons.forEach(b => b.classList.remove('active'));
         discButtons[0].classList.add('active');
 
-        sizesFiltersGrid.querySelectorAll('.size-btn').forEach(b => b.classList.remove('active'));
+        renderSizesFilters();
         
         const checks = sourceFiltersList.querySelectorAll('.pill-checkbox');
         checks.forEach(c => {
