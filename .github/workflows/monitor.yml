@@ -25,7 +25,8 @@ permissions:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Adidas Netshoes sozinho leva ~4min (164 páginas × 1.5s) — 20min dá margem.
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -67,13 +68,13 @@ jobs:
             echo "hash=missing" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Rodar monitor (OUS + Netshoes)
+      - name: "Rodar monitor (ÖUS + BaW — site próprio + Clube Netshoes)"
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           PYTHONPATH=src python -m ous_monitor.cli run \
-            --sources ous netshoes \
+            --sources ous netshoes baw netshoes_baw netshoes_adidas \
             --mode "${{ steps.pick_mode.outputs.mode }}"
 
       - name: Commitar DB se houve mudança
