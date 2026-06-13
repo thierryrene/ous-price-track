@@ -248,20 +248,48 @@ def _resolve_creds(bot_token, chat_id, dry_run):
     return bot_token, chat_id
 
 
-# Teclado Inline padrão com as ações de monitoramento
-MENU_KEYBOARD = {
+# Teclados Inline estruturados para navegação interativa
+MAIN_KEYBOARD = {
     "inline_keyboard": [
         [
-            {"text": "🟧 OUS", "callback_data": "run:ous"},
+            {"text": "🔍 Consultar DB", "callback_data": "menu:db"},
+            {"text": "⚡ Rodar Scrapers", "callback_data": "menu:scrapers"},
+        ],
+        [
+            {"text": "📊 Snapshot Geral", "callback_data": "run:snapshot"},
+            {"text": "ℹ️ Status Varreduras", "callback_data": "menu:status"},
+        ]
+    ]
+}
+
+DB_KEYBOARD = {
+    "inline_keyboard": [
+        [
+            {"text": "🟧 ÖUS", "callback_data": "db:ous"},
+            {"text": "🟦 Netshoes", "callback_data": "db:netshoes"},
+            {"text": "🟥 Centauro", "callback_data": "db:centauro"},
+        ],
+        [
+            {"text": "🔙 Menu Principal", "callback_data": "menu:main"},
+        ]
+    ]
+}
+
+SCRAPERS_KEYBOARD = {
+    "inline_keyboard": [
+        [
+            {"text": "🟧 ÖUS", "callback_data": "run:ous"},
             {"text": "🟦 Netshoes", "callback_data": "run:netshoes"},
             {"text": "🟥 Centauro", "callback_data": "run:centauro"},
         ],
         [
             {"text": "🔄 Rodar Todas", "callback_data": "run:all"},
-            {"text": "📊 Snapshot Geral", "callback_data": "run:snapshot"},
+            {"text": "🔙 Menu Principal", "callback_data": "menu:main"},
         ]
     ]
 }
+
+MENU_KEYBOARD = MAIN_KEYBOARD
 
 
 def _send_messages(messages, bot_token, chat_id, dry_run, label, reply_markup=None):
@@ -374,3 +402,17 @@ def send_promotions(rows, *, bot_token=None, chat_id=None, dry_run=False) -> int
     """Wrapper de retrocompatibilidade — mantém a antiga assinatura."""
     return send_alert({"new_promo": list(rows), "ended": [], "weaker": [], "price_up": []},
                       bot_token=bot_token, chat_id=chat_id, dry_run=dry_run)
+
+
+def send_db_promotions(source_label: str, rows: list, *, bot_token=None, chat_id=None) -> int:
+    """Formata e envia as promoções consultadas diretamente no banco de dados."""
+    bot_token, chat_id = _resolve_creds(bot_token, chat_id, False)
+    if not rows:
+        return _send_messages(
+            [f"<b>🔍 {escape(source_label)}: Nenhuma promoção ativa encontrada no banco de dados.</b>"],
+            bot_token, chat_id, False, "db_empty", reply_markup=DB_KEYBOARD
+        )
+    header = f"<b>🔍 {escape(source_label)} — {len(rows)} promoção(ões) ativa(s) no DB</b>"
+    lines = [_format_promo(row) for row in rows]
+    messages = list(_chunk_messages(header, lines))
+    return _send_messages(messages, bot_token, chat_id, False, "db_promos", reply_markup=DB_KEYBOARD)

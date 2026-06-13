@@ -1,18 +1,29 @@
-version: '3.8'
-
 services:
   app:
     build: .
     image: ous-price-monitor:latest
     container_name: ous-price-monitor
     restart: unless-stopped
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     volumes:
-      - ous_monitor_data:/app/data
+      - ./data:/app/data
     env_file:
       - .env
+    networks:
+      - coolify
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.price-monitor-http.entrypoints=http"
+      - "traefik.http.routers.price-monitor-http.rule=Host(`price-monitor.thierryrenematos.tec.br`)"
+      - "traefik.http.routers.price-monitor-http.middlewares=redirect-to-https"
+      - "traefik.http.routers.price-monitor-https.entrypoints=https"
+      - "traefik.http.routers.price-monitor-https.rule=Host(`price-monitor.thierryrenematos.tec.br`)"
+      - "traefik.http.routers.price-monitor-https.tls=true"
+      - "traefik.http.routers.price-monitor-https.tls.certresolver=letsencrypt"
+      - "traefik.http.services.price-monitor-service.loadbalancer.server.port=8000"
+      - "traefik.http.routers.price-monitor-https.service=price-monitor-service"
 
-volumes:
-  ous_monitor_data:
-    name: ous_monitor_data
+networks:
+  coolify:
+    external: true

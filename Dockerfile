@@ -1,13 +1,13 @@
-FROM mcr.microsoft.com/playwright/python:v1.48.0-jammy
+FROM mcr.microsoft.com/playwright/python:v1.48.0-noble
 
 WORKDIR /app
 
-# Copia os arquivos de definição de projeto e instala as dependências
+# Copia os arquivos de definição de projeto e o código fonte
 COPY pyproject.toml ./
-RUN pip install --no-cache-dir .
-
-# Copia o restante do código fonte
 COPY src/ ./src/
+
+# Instala as dependências e o pacote
+RUN pip install --no-cache-dir .
 
 # Garante que a pasta de dados exista para o SQLite
 RUN mkdir -p /app/data

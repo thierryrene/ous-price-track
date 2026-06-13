@@ -11,7 +11,15 @@ from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
 
 from .cli import cmd_run, cmd_snapshot, DEFAULT_DB, DEFAULT_ENV
-from .notifier import send_menu_message, API_BASE, MENU_KEYBOARD
+from .notifier import (
+    send_menu_message,
+    API_BASE,
+    MENU_KEYBOARD,
+    MAIN_KEYBOARD,
+    DB_KEYBOARD,
+    SCRAPERS_KEYBOARD,
+    send_db_promotions,
+)
 
 log = logging.getLogger("ous_monitor.server")
 
@@ -244,6 +252,56 @@ def setup_webhook(url: str):
     return resp.json()
 
 
+def get_db_status_text() -> str:
+    try:
+        with sqlite3.connect(DEFAULT_DB) as conn:
+            rows = conn.execute(
+                "SELECT source, MAX(observed_at) FROM price_history GROUP BY source"
+            ).fetchall()
+            if not rows:
+                return "<b>ℹ️ Nenhuma varredura registrada no banco de dados ainda.</b>"
+            lines = ["<b>ℹ️ Status das Varreduras (Última Observação):</b>"]
+            for source, observed_at in rows:
+                dt = observed_at.replace("T", " ").split("+")[0]
+                lines.append(f"• <code>{source}</code>: {dt}")
+            return "\n".join(lines)
+    except Exception as e:
+        return f"❌ Erro ao consultar status das varreduras: <pre>{str(e)}</pre>"
+
+
+def get_latest_db_promotions(source: str) -> list[dict]:
+    with sqlite3.connect(DEFAULT_DB) as conn:
+        conn.row_factory = sqlite3.Row
+        if source == "netshoes":
+            query_sources = ("netshoes", "netshoes_baw", "netshoes_adidas")
+        else:
+            query_sources = (source,)
+
+        placeholders = ",".join("?" for _ in query_sources)
+        rows = conn.execute(f"""
+            WITH latest AS (
+                SELECT source, sku, list_price, price, sizes, stock_qty, observed_at,
+                       ROW_NUMBER() OVER (PARTITION BY source, sku
+                                          ORDER BY observed_at DESC) AS rn
+                  FROM price_history
+                 WHERE source IN ({placeholders})
+            )
+            SELECT p.source, p.sku, p.name, p.url, p.image,
+                   l.list_price, l.price, l.observed_at,
+                   l.sizes, l.stock_qty,
+                   NULL AS prev_price,
+                   NULL AS prev_list_price,
+                   NULL AS prev_observed_at
+              FROM latest l
+              JOIN products p USING (source, sku)
+             WHERE l.rn = 1
+               AND l.list_price IS NOT NULL
+               AND l.list_price > l.price
+             ORDER BY (1.0 - l.price / l.list_price) DESC, p.name
+        """, query_sources).fetchall()
+        return [dict(row) for row in rows]
+
+
 @app.post("/webhook")
 async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
     """Recebe webhooks do Telegram para cliques de botões e mensagens do usuário."""
@@ -267,6 +325,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             return JSONResponse({"status": "no_message_in_callback"})
 
         chat_id = message["chat"]["id"]
+        message_id = message["message_id"]
 
         # Responde ao Telegram imediatamente para remover o estado de carregamento do botão
         async with httpx.AsyncClient() as client:
@@ -276,7 +335,51 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 timeout=5.0,
             )
 
-        # Determina a ação
+        # Helper para editar a mensagem/menu atual
+        async def edit_menu(text: str, reply_markup: dict):
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    f"{API_BASE}/bot{bot_token}/editMessageText",
+                    json={
+                        "chat_id": chat_id,
+                        "message_id": message_id,
+                        "text": text,
+                        "parse_mode": "HTML",
+                        "reply_markup": reply_markup,
+                        "disable_web_page_preview": True,
+                    },
+                    timeout=5.0,
+                )
+
+        # Tratar navegação do menu interativo
+        if callback_data.startswith("menu:"):
+            target = callback_data.split(":")[1]
+            if target == "main":
+                await edit_menu("Escolha uma opção no menu abaixo para monitoramento:", MAIN_KEYBOARD)
+            elif target == "db":
+                await edit_menu("Filtros de consulta rápida de preços no banco de dados local (DB):", DB_KEYBOARD)
+            elif target == "scrapers":
+                await edit_menu("Selecione qual varredura de preços (scraper) ao vivo deseja rodar:", SCRAPERS_KEYBOARD)
+            elif target == "status":
+                status_text = get_db_status_text()
+                back_keyboard = {"inline_keyboard": [[{"text": "🔙 Menu Principal", "callback_data": "menu:main"}]]}
+                await edit_menu(status_text, back_keyboard)
+            return JSONResponse({"status": "menu_updated"})
+
+        # Tratar consultas diretas ao banco de dados (DB)
+        if callback_data.startswith("db:"):
+            source = callback_data.split(":")[1]
+            source_labels = {
+                "ous": "ÖUS",
+                "netshoes": "Netshoes",
+                "centauro": "Centauro"
+            }
+            label = source_labels.get(source, source.upper())
+            promotions = get_latest_db_promotions(source)
+            background_tasks.add_task(send_db_promotions, label, promotions, bot_token=bot_token, chat_id=chat_id)
+            return JSONResponse({"status": "db_query_queued"})
+
+        # Determina a ação para disparar o scraper
         sources = None
         is_snapshot = False
 
@@ -289,7 +392,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
         else:
             return JSONResponse({"status": "unknown_callback_data"})
 
-        # Dispara o scraper em segundo plano (background tasks do FastAPI/thread pool)
+        # Dispara o scraper em segundo plano
         background_tasks.add_task(run_scraper_task, sources, is_snapshot, bot_token, str(chat_id))
         return JSONResponse({"status": "task_queued"})
 
@@ -306,8 +409,12 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             send_menu_message(bot_token=bot_token, chat_id=chat_id)
             return JSONResponse({"status": "menu_sent"})
 
-        # Qualquer outra mensagem de texto vai para o Agente AGY em background
-        background_tasks.add_task(run_agy_agent_chat, text, bot_token, str(chat_id))
-        return JSONResponse({"status": "agent_queued"})
+        # Qualquer outra mensagem de texto exibe o menu principal explicativo
+        send_menu_message(
+            bot_token=bot_token,
+            chat_id=chat_id,
+            text="Para interagir com o monitor de preços, utilize os botões interativos abaixo:"
+        )
+        return JSONResponse({"status": "menu_sent"})
 
     return JSONResponse({"status": "ignored"})
