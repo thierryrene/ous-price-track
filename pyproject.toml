@@ -2,11 +2,13 @@
 name = "ous-price-monitor"
 version = "0.1.0"
 description = "Monitora promoções da marca OUS em ous.com.br, centauro.com.br e netshoes.com.br"
-requires-python = ">=3.11"
+requires-python = ">=3.8"
 dependencies = [
     "httpx>=0.27",
     "selectolax>=0.3.21",
     "curl_cffi>=0.7",
+    "fastapi>=0.100",
+    "uvicorn>=0.22",
 ]
 
 [project.scripts]

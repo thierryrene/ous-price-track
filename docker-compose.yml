@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    image: ous-price-monitor:latest
+    container_name: ous-price-monitor
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ous_monitor_data:/app/data
+    env_file:
+      - .env
+
+volumes:
+  ous_monitor_data:
+    name: ous_monitor_data

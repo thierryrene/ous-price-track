@@ -248,7 +248,23 @@ def _resolve_creds(bot_token, chat_id, dry_run):
     return bot_token, chat_id
 
 
-def _send_messages(messages, bot_token, chat_id, dry_run, label):
+# Teclado Inline padrão com as ações de monitoramento
+MENU_KEYBOARD = {
+    "inline_keyboard": [
+        [
+            {"text": "🟧 OUS", "callback_data": "run:ous"},
+            {"text": "🟦 Netshoes", "callback_data": "run:netshoes"},
+            {"text": "🟥 Centauro", "callback_data": "run:centauro"},
+        ],
+        [
+            {"text": "🔄 Rodar Todas", "callback_data": "run:all"},
+            {"text": "📊 Snapshot Geral", "callback_data": "run:snapshot"},
+        ]
+    ]
+}
+
+
+def _send_messages(messages, bot_token, chat_id, dry_run, label, reply_markup=None):
     if dry_run:
         log.info("Telegram (DRY-RUN, %s): enviaria %d mensagem(ns):", label, len(messages))
         for i, m in enumerate(messages, 1):
@@ -257,13 +273,18 @@ def _send_messages(messages, bot_token, chat_id, dry_run, label):
     sent = 0
     url = f"{API_BASE}/bot{bot_token}/sendMessage"
     with httpx.Client(timeout=TIMEOUT_S) as client:
-        for msg in messages:
-            resp = client.post(url, json={
+        for i, msg in enumerate(messages):
+            payload = {
                 "chat_id": chat_id,
                 "text": msg,
                 "parse_mode": "HTML",
                 "disable_web_page_preview": True,
-            })
+            }
+            # Adiciona os botões inline apenas na última mensagem para não duplicar visualmente
+            if reply_markup and i == len(messages) - 1:
+                payload["reply_markup"] = reply_markup
+
+            resp = client.post(url, json=payload)
             if resp.status_code != 200:
                 log.error("Telegram falhou (%s): %s", resp.status_code, resp.text[:300])
                 resp.raise_for_status()
@@ -271,7 +292,13 @@ def _send_messages(messages, bot_token, chat_id, dry_run, label):
     return sent
 
 
-def send_alert(changes: dict, *, bot_token=None, chat_id=None, dry_run=False) -> int:
+def send_menu_message(bot_token=None, chat_id=None, text="Escolha uma opção no menu abaixo para monitoramento on-demand:", dry_run=False) -> int:
+    """Envia uma mensagem contendo apenas o teclado de menu do bot."""
+    bot_token, chat_id = _resolve_creds(bot_token, chat_id, dry_run)
+    return _send_messages([text], bot_token, chat_id, dry_run, "menu", reply_markup=MENU_KEYBOARD)
+
+
+def send_alert(changes: dict, *, bot_token=None, chat_id=None, dry_run=False, reply_markup=MENU_KEYBOARD) -> int:
     """Modo alerta-ao-vivo: junta todas as categorias num bloco com cabeçalho.
 
     `changes` é o dict retornado por storage.find_changes (chaves: new_promo,
@@ -303,14 +330,14 @@ def send_alert(changes: dict, *, bot_token=None, chat_id=None, dry_run=False) ->
             lines.append(_format_for_category(cat, row))
 
     messages = list(_chunk_messages(header, lines))
-    sent = _send_messages(messages, bot_token, chat_id, dry_run, "alert")
+    sent = _send_messages(messages, bot_token, chat_id, dry_run, "alert", reply_markup=reply_markup)
     log.info("Telegram alert: %d msg(s) com %d mudança(s) (%s).",
              sent, total, ", ".join(f"{k}={v}" for k, v in counts.items() if v))
     return sent
 
 
 def send_digest(changes: dict, *, period_label: str = "hoje",
-                bot_token=None, chat_id=None, dry_run=False) -> int:
+                bot_token=None, chat_id=None, dry_run=False, reply_markup=MENU_KEYBOARD) -> int:
     """Modo digest: 4 seções separadas com totais. Pensado para 1×/dia."""
     counts = {k: len(v) for k, v in changes.items()}
     total = sum(counts.values())
@@ -338,7 +365,7 @@ def send_digest(changes: dict, *, period_label: str = "hoje",
             lines.append(_format_for_category(cat, row))
 
     messages = list(_chunk_messages(header, lines))
-    sent = _send_messages(messages, bot_token, chat_id, dry_run, "digest")
+    sent = _send_messages(messages, bot_token, chat_id, dry_run, "digest", reply_markup=reply_markup)
     log.info("Telegram digest: %d msg(s) com %d mudança(s).", sent, total)
     return sent
 
