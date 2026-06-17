@@ -24,6 +24,8 @@ API_BASE = "https://api.telegram.org"
 MAX_MSG_CHARS = 3800  # margem de segurança vs 4096 do Telegram
 TIMEOUT_S = 15.0
 
+PENDING_MESSAGES_CACHE = {}  # chat_id -> (bot_token, messages_list, reply_markup)
+
 
 class TelegramConfigError(RuntimeError):
     pass
@@ -248,48 +250,23 @@ def _resolve_creds(bot_token, chat_id, dry_run):
     return bot_token, chat_id
 
 
-# Teclados Inline estruturados para navegação interativa
-MAIN_KEYBOARD = {
+# Teclado Inline padrão com as ações de monitoramento
+MENU_KEYBOARD = {
     "inline_keyboard": [
         [
-            {"text": "🔍 Consultar DB", "callback_data": "menu:db"},
-            {"text": "⚡ Rodar Scrapers", "callback_data": "menu:scrapers"},
-        ],
-        [
-            {"text": "📊 Snapshot Geral", "callback_data": "run:snapshot"},
-            {"text": "ℹ️ Status Varreduras", "callback_data": "menu:status"},
-        ]
-    ]
-}
-
-DB_KEYBOARD = {
-    "inline_keyboard": [
-        [
-            {"text": "🟧 ÖUS", "callback_data": "db:ous"},
-            {"text": "🟦 Netshoes", "callback_data": "db:netshoes"},
-            {"text": "🟥 Centauro", "callback_data": "db:centauro"},
-        ],
-        [
-            {"text": "🔙 Menu Principal", "callback_data": "menu:main"},
-        ]
-    ]
-}
-
-SCRAPERS_KEYBOARD = {
-    "inline_keyboard": [
-        [
-            {"text": "🟧 ÖUS", "callback_data": "run:ous"},
+            {"text": "🟧 OUS", "callback_data": "run:ous"},
             {"text": "🟦 Netshoes", "callback_data": "run:netshoes"},
             {"text": "🟥 Centauro", "callback_data": "run:centauro"},
         ],
         [
             {"text": "🔄 Rodar Todas", "callback_data": "run:all"},
-            {"text": "🔙 Menu Principal", "callback_data": "menu:main"},
+            {"text": "📊 Snapshot Geral", "callback_data": "run:snapshot"},
+        ],
+        [
+            {"text": "🌟 Promoções de Hoje", "callback_data": "run:daily_promos"}
         ]
     ]
 }
-
-MENU_KEYBOARD = MAIN_KEYBOARD
 
 
 def _send_messages(messages, bot_token, chat_id, dry_run, label, reply_markup=None):
@@ -317,8 +294,32 @@ def _send_messages(messages, bot_token, chat_id, dry_run, label, reply_markup=No
                 log.error("Telegram falhou (%s): %s", resp.status_code, resp.text[:300])
                 resp.raise_for_status()
             sent += 1
+            
+            # Adiciona um pequeno delay entre mensagens para respeitar o rate limit do Telegram (1 msg/segundo por chat)
+            if i < len(messages) - 1:
+                time.sleep(1.5)
     return sent
 
+
+CATEGORY_KEYBOARD = {
+    "inline_keyboard": [
+        [
+            {"text": "👟 Tênis/Calçados", "callback_data": "run:daily_promos:tenis"},
+            {"text": "👕 Vestuário", "callback_data": "run:daily_promos:vestuario"}
+        ],
+        [
+            {"text": "🧢 Acessórios", "callback_data": "run:daily_promos:acessorios"},
+            {"text": "🌟 Todas as Peças", "callback_data": "run:daily_promos:tudo"}
+        ],
+        [
+            {"text": "🔥 Acima de 50% OFF", "callback_data": "run:daily_promos:50off"},
+            {"text": "💸 Até R$ 100", "callback_data": "run:daily_promos:ate100"}
+        ],
+        [
+            {"text": "🔙 Voltar", "callback_data": "run:cancel_load"}
+        ]
+    ]
+}
 
 def send_menu_message(bot_token=None, chat_id=None, text="Escolha uma opção no menu abaixo para monitoramento on-demand:", dry_run=False) -> int:
     """Envia uma mensagem contendo apenas o teclado de menu do bot."""
@@ -402,17 +403,3 @@ def send_promotions(rows, *, bot_token=None, chat_id=None, dry_run=False) -> int
     """Wrapper de retrocompatibilidade — mantém a antiga assinatura."""
     return send_alert({"new_promo": list(rows), "ended": [], "weaker": [], "price_up": []},
                       bot_token=bot_token, chat_id=chat_id, dry_run=dry_run)
-
-
-def send_db_promotions(source_label: str, rows: list, *, bot_token=None, chat_id=None) -> int:
-    """Formata e envia as promoções consultadas diretamente no banco de dados."""
-    bot_token, chat_id = _resolve_creds(bot_token, chat_id, False)
-    if not rows:
-        return _send_messages(
-            [f"<b>🔍 {escape(source_label)}: Nenhuma promoção ativa encontrada no banco de dados.</b>"],
-            bot_token, chat_id, False, "db_empty", reply_markup=DB_KEYBOARD
-        )
-    header = f"<b>🔍 {escape(source_label)} — {len(rows)} promoção(ões) ativa(s) no DB</b>"
-    lines = [_format_promo(row) for row in rows]
-    messages = list(_chunk_messages(header, lines))
-    return _send_messages(messages, bot_token, chat_id, False, "db_promos", reply_markup=DB_KEYBOARD)
