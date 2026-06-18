@@ -51,8 +51,8 @@ def run_store_scraper(store: str) -> str:
     Args:
         store: A loja para varrer. Deve ser 'ous', 'netshoes' ou 'centauro'.
     """
-    if store not in ("ous", "netshoes", "centauro"):
-        return f"Erro: Loja desconhecida '{store}'. Escolha entre 'ous', 'netshoes' ou 'centauro'."
+    if store not in ("ous", "netshoes", "centauro", "baw", "netshoes_baw", "netshoes_adidas", "netshoes_adidas_originals"):
+        return f"Erro: Loja desconhecida '{store}'. Escolha entre 'ous', 'netshoes', 'centauro', 'baw', 'netshoes_baw', 'netshoes_adidas' ou 'netshoes_adidas_originals'."
     try:
         args = argparse.Namespace(
             db=DEFAULT_DB,
@@ -194,6 +194,8 @@ def run_scraper_task(sources: list[str] | None, is_snapshot: bool, bot_token: st
                 db=DEFAULT_DB,
                 env=DEFAULT_ENV,
                 sources=sources,
+                mode="alert",
+                digest_hours=24,
                 no_telegram=False,
                 dry_run_telegram=False,
             )
@@ -233,30 +235,32 @@ async def run_agy_agent_chat(user_message: str, bot_token: str, chat_id: str):
     gemini_api_key = os.environ.get("GEMINI_API_KEY")
     if not gemini_api_key:
         try:
-            httpx.post(
-                f"{API_BASE}/bot{bot_token}/sendMessage",
-                json={
-                    "chat_id": chat_id,
-                    "text": (
-                        "❌ <b>GEMINI_API_KEY não encontrada no servidor!</b>\n"
-                        "Para conversar por chat e utilizar a inteligência do Agy, configure a variável "
-                        "<code>GEMINI_API_KEY</code> no painel do Coolify."
-                    ),
-                    "parse_mode": "HTML",
-                },
-                timeout=10.0,
-            )
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    f"{API_BASE}/bot{bot_token}/sendMessage",
+                    json={
+                        "chat_id": chat_id,
+                        "text": (
+                            "❌ <b>GEMINI_API_KEY não encontrada no servidor!</b>\n"
+                            "Para conversar por chat e utilizar a inteligência do Agy, configure a variável "
+                            "<code>GEMINI_API_KEY</code> no painel do Coolify."
+                        ),
+                        "parse_mode": "HTML",
+                    },
+                    timeout=10.0,
+                )
         except Exception:
             log.exception("Erro ao alertar usuário sobre GEMINI_API_KEY ausente")
         return
 
     # Envia ação de "digitando..." para feedback visual no Telegram
     try:
-        httpx.post(
-            f"{API_BASE}/bot{bot_token}/sendChatAction",
-            json={"chat_id": chat_id, "action": "typing"},
-            timeout=5.0,
-        )
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"{API_BASE}/bot{bot_token}/sendChatAction",
+                json={"chat_id": chat_id, "action": "typing"},
+                timeout=5.0,
+            )
     except Exception:
         pass
 
@@ -287,29 +291,31 @@ async def run_agy_agent_chat(user_message: str, bot_token: str, chat_id: str):
                 full_response += chunk
 
             # Envia a resposta final para o chat no Telegram
-            httpx.post(
-                f"{API_BASE}/bot{bot_token}/sendMessage",
-                json={
-                    "chat_id": chat_id,
-                    "text": full_response,
-                    "parse_mode": "HTML",
-                    "disable_web_page_preview": True,
-                    "reply_markup": MENU_KEYBOARD,  # Inclui o menu com os botões inline no rodapé
-                },
-                timeout=15.0,
-            )
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    f"{API_BASE}/bot{bot_token}/sendMessage",
+                    json={
+                        "chat_id": chat_id,
+                        "text": full_response,
+                        "parse_mode": "HTML",
+                        "disable_web_page_preview": True,
+                        "reply_markup": MENU_KEYBOARD,  # Inclui o menu com os botões inline no rodapé
+                    },
+                    timeout=15.0,
+                )
     except Exception as e:
         log.exception("Falha durante execução do agente de IA AGY")
         try:
-            httpx.post(
-                f"{API_BASE}/bot{bot_token}/sendMessage",
-                json={
-                    "chat_id": chat_id,
-                    "text": f"❌ <b>Erro no Agente de IA:</b>\n<pre>{str(e)}</pre>",
-                    "parse_mode": "HTML",
-                },
-                timeout=10.0,
-            )
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    f"{API_BASE}/bot{bot_token}/sendMessage",
+                    json={
+                        "chat_id": chat_id,
+                        "text": f"❌ <b>Erro no Agente de IA:</b>\n<pre>{str(e)}</pre>",
+                        "parse_mode": "HTML",
+                    },
+                    timeout=10.0,
+                )
         except Exception:
             pass
 
@@ -375,26 +381,9 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
         sources = None
         is_snapshot = False
 
-        from .notifier import PENDING_MESSAGES_CACHE, _send_messages
-        if callback_data == "run:load_more":
-            if str(chat_id) in PENDING_MESSAGES_CACHE:
-                b_token, pending, original_markup = PENDING_MESSAGES_CACHE.pop(str(chat_id))
-                background_tasks.add_task(_send_messages, pending, b_token, chat_id, False, "load_more", original_markup)
-                return JSONResponse({"status": "loading_more"})
-            else:
-                return JSONResponse({"status": "nothing_to_load"})
-                
-        elif callback_data == "run:cancel_load":
-            if str(chat_id) in PENDING_MESSAGES_CACHE:
-                del PENDING_MESSAGES_CACHE[str(chat_id)]
-            send_menu_message(bot_token=bot_token, chat_id=chat_id, text="Carregamento cancelado. Escolha uma nova opção:")
-            return JSONResponse({"status": "cancelled"})
+        from .notifier import _send_messages
 
-        elif callback_data.startswith("run:"):
-            action = callback_data.split(":")[1]
-            if action != "all":
-                sources = [action]
-        elif callback_data == "run:snapshot":
+        if callback_data == "run:snapshot":
             is_snapshot = True
         elif callback_data == "run:daily_promos":
             # Apresenta o menu de categorias em vez de rodar direto
@@ -410,11 +399,14 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                     timeout=5.0
                 )
             return JSONResponse({"status": "category_menu_sent"})
-            
         elif callback_data.startswith("run:daily_promos:"):
             category = callback_data.split(":")[-1]
             background_tasks.add_task(run_daily_promos_task, bot_token, str(chat_id), category)
             return JSONResponse({"status": "daily_task_queued"})
+        elif callback_data.startswith("run:"):
+            action = callback_data.split(":")[1]
+            if action != "all":
+                sources = [action]
         else:
             return JSONResponse({"status": "unknown_callback_data"})
 
@@ -435,8 +427,10 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             send_menu_message(bot_token=bot_token, chat_id=chat_id)
             return JSONResponse({"status": "menu_sent"})
 
-        # Qualquer outra mensagem de texto vai para o Agente AGY em background
-        background_tasks.add_task(run_agy_agent_chat, text, bot_token, str(chat_id))
-        return JSONResponse({"status": "agent_queued"})
+        send_menu_message(
+            bot_token=bot_token, chat_id=chat_id,
+            text="Use os botões abaixo para interagir com o monitor.",
+        )
+        return JSONResponse({"status": "menu_sent"})
 
     return JSONResponse({"status": "ignored"})

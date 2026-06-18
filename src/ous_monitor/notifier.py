@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from html import escape
 from typing import Iterable, List, Optional
 
@@ -23,9 +24,6 @@ log = logging.getLogger(__name__)
 API_BASE = "https://api.telegram.org"
 MAX_MSG_CHARS = 3800  # margem de segurança vs 4096 do Telegram
 TIMEOUT_S = 15.0
-
-PENDING_MESSAGES_CACHE = {}  # chat_id -> (bot_token, messages_list, reply_markup)
-
 
 class TelegramConfigError(RuntimeError):
     pass
@@ -49,11 +47,19 @@ SOURCE_EMOJI = {
     "ous": "🟧",        # OUS oficial
     "netshoes": "🟦",   # Netshoes Clube
     "centauro": "🟥",   # Centauro
+    "baw": "⚫",
+    "netshoes_baw": "🟪",
+    "netshoes_adidas": "🟢",
+    "netshoes_adidas_originals": "🔵",
 }
 SOURCE_LABEL = {
     "ous": "OUS oficial",
     "netshoes": "Netshoes Clube",
     "centauro": "Centauro",
+    "baw": "BaW Clothing",
+    "netshoes_baw": "Netshoes BaW",
+    "netshoes_adidas": "Netshoes Adidas",
+    "netshoes_adidas_originals": "Netshoes Adidas Originals",
 }
 
 
@@ -257,6 +263,11 @@ MENU_KEYBOARD = {
             {"text": "🟧 OUS", "callback_data": "run:ous"},
             {"text": "🟦 Netshoes", "callback_data": "run:netshoes"},
             {"text": "🟥 Centauro", "callback_data": "run:centauro"},
+        ],
+        [
+            {"text": "⚫ BaW", "callback_data": "run:baw"},
+            {"text": "🟢 Adidas", "callback_data": "run:netshoes_adidas"},
+            {"text": "🔵 Adidas Org.", "callback_data": "run:netshoes_adidas_originals"},
         ],
         [
             {"text": "🔄 Rodar Todas", "callback_data": "run:all"},

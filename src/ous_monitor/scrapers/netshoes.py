@@ -46,7 +46,7 @@ HEADERS = {
         "image/avif,image/webp,*/*;q=0.8"
     ),
     "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8",
-    "Accept-Encoding": "gzip, deflate, br",
+    "Accept-Encoding": "gzip, deflate",
 }
 
 _INITIAL_STATE_RE = re.compile(r"window\.__INITIAL_STATE__\s*=\s*")
@@ -108,6 +108,12 @@ def _is_adidas(brand: Optional[str]) -> bool:
     # Strict: aceita só "Adidas". "Adidas Originals" é catalogada como linha
     # separada na Netshoes (marca=adidas-originals) e não vem em marca=adidas.
     return brand.strip().upper() == "ADIDAS"
+
+
+def _is_adidas_originals(brand: Optional[str]) -> bool:
+    if not brand:
+        return False
+    return brand.strip().upper() == "ADIDAS ORIGINALS"
 
 
 class NetshoesScraper:
@@ -214,4 +220,19 @@ def NetshoesAdidasScraper() -> NetshoesScraper:
         brand_marca="adidas",
         brand_matcher=_is_adidas,
         brand_label="Adidas",
+    )
+
+
+def NetshoesAdidasOriginalsScraper() -> NetshoesScraper:
+    """Factory: Clube Netshoes filtrado por Adidas Originals.
+
+    Catálogo menor (~92 itens, ~4 páginas). Separado do Adidas regular
+    (marca=adidas-originals vs marca=adidas).
+    """
+    return NetshoesScraper(
+        source_name="netshoes_adidas_originals",
+        brand_query="adidas originals",
+        brand_marca="adidas-originals",
+        brand_matcher=_is_adidas_originals,
+        brand_label="Adidas Originals",
     )

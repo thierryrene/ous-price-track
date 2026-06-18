@@ -52,7 +52,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           PYTHONPATH=src python -m ous_monitor.cli snapshot \
-            --sources ous netshoes baw netshoes_baw netshoes_adidas
+            --sources ous netshoes baw netshoes_baw netshoes_adidas netshoes_adidas_originals
 
       - name: Commitar DB se houve mudança
         run: |

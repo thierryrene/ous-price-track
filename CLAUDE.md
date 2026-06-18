@@ -19,11 +19,13 @@ Active sources (keys in `cli.SCRAPERS`):
 - `netshoes_baw` — clube.netshoes.com.br filtrado por marca BaW Clothing
 - `netshoes_adidas` — clube.netshoes.com.br filtrado por marca Adidas (~6900 itens,
   ~164 páginas, ~4min de scraping; NÃO inclui Adidas Originals)
+- `netshoes_adidas_originals` — clube.netshoes.com.br filtrado por marca Adidas
+  Originals (~92 itens, ~4 páginas; marca separada na Netshoes: `marca=adidas-originals`)
 
 Cada par (loja, marca) é uma source distinta — não há coluna `brand` no DB,
 quem segrega marca dentro do mesmo retailer é o `source_name`. `NetshoesScraper`
-é parametrizado por marca; `NetshoesBawScraper` é só uma factory que devolve
-uma instância configurada para `marca=baw-clothing` com source `netshoes_baw`.
+é parametrizado por marca; `NetshoesBawScraper` e `NetshoesAdidasOriginalsScraper`
+são factories que devolvem instâncias configuradas para cada marca.
 
 ## Commands
 

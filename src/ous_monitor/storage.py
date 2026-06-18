@@ -62,6 +62,9 @@ def connect(db_path: Path):
         _migrate(conn)
         yield conn
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -84,8 +87,29 @@ def record_run(conn: sqlite3.Connection, products: Iterable[Product]) -> dict[st
     now = _now()
     counters = {"new": 0, "updated": 0, "price_drop": 0, "new_promo": 0}
 
-    for p in products:
-        prev = latest_observation(conn, p.source, p.sku)
+    products_list = list(products)
+
+    keys = {(p.source, p.sku) for p in products_list}
+    prev_map: dict[tuple[str, str], sqlite3.Row] = {}
+    if keys:
+        placeholders = ",".join(["(?,?)"] * len(keys))
+        flat_keys = [k for pair in keys for k in pair]
+        rows = conn.execute(
+            f"""
+            SELECT source, sku, list_price, price, available, observed_at
+              FROM price_history
+             WHERE (source, sku) IN ({placeholders})
+             ORDER BY observed_at DESC
+            """,
+            flat_keys,
+        ).fetchall()
+        for r in rows:
+            key = (r["source"], r["sku"])
+            if key not in prev_map:
+                prev_map[key] = r
+
+    for p in products_list:
+        prev = prev_map.get((p.source, p.sku))
 
         existing = conn.execute(
             "SELECT 1 FROM products WHERE source = ? AND sku = ?",

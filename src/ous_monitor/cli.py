@@ -28,6 +28,7 @@ from .notifier import TelegramConfigError, send_alert, send_digest
 from .scrapers.baw import BawScraper
 from .scrapers.centauro import CentauroScraper
 from .scrapers.netshoes import (
+    NetshoesAdidasOriginalsScraper,
     NetshoesAdidasScraper,
     NetshoesBawScraper,
     NetshoesScraper,
@@ -49,6 +50,7 @@ SCRAPERS = {
     "baw": BawScraper,
     "netshoes_baw": NetshoesBawScraper,
     "netshoes_adidas": NetshoesAdidasScraper,
+    "netshoes_adidas_originals": NetshoesAdidasOriginalsScraper,
 }
 
 log = logging.getLogger("ous_monitor")
@@ -157,7 +159,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         ]:
             for row in changes[cat]:
                 pct = (int(round((1 - row["price"] / row["list_price"]) * 100))
-                       if row["list_price"] else 0)
+                       if row["list_price"] and row["list_price"] > 0 else 0)
                 print(f"  [{row['source']:8}] {label:18} "
                       f"{row['name'][:45]:45} "
                       f"{_fmt_brl(row['price'])} (de {_fmt_brl(row['list_price'])}) "
@@ -217,7 +219,7 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
     print(f"\n=== {total} produto(s) em promoção (snapshot completo) ===")
     for row in changes["new_promo"]:
         pct = (int(round((1 - row["price"] / row["list_price"]) * 100))
-               if row["list_price"] else 0)
+               if row["list_price"] and row["list_price"] > 0 else 0)
         print(f"  [{row['source']:8}] "
               f"{row['name'][:55]:55} "
               f"{_fmt_brl(row['price'])} (de {_fmt_brl(row['list_price'])}) "
@@ -256,7 +258,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     for r in rows:
         list_price = r["list_price"]
         price = r["price"]
-        pct = round((1 - price / list_price) * 100) if list_price else 0
+        pct = round((1 - price / list_price) * 100) if list_price and list_price > 0 else 0
         print(
             f"  [{r['source']:8}] {r['name'][:55]:55} "
             f"{_fmt_brl(price)} (de {_fmt_brl(list_price)}) "
@@ -370,7 +372,7 @@ def cmd_list(args: argparse.Namespace) -> int:
         return 0
     print(f"=== {len(rows)} produtos em promoção (último snapshot) ===")
     for r in rows[: args.limit]:
-        pct = round((1 - r["price"] / r["list_price"]) * 100)
+        pct = round((1 - r["price"] / r["list_price"]) * 100) if r["list_price"] and r["list_price"] > 0 else 0
         print(
             f"  [{r['source']:8}] {r['name'][:55]:55} "
             f"{_fmt_brl(r['price'])} (de {_fmt_brl(r['list_price'])}) "
