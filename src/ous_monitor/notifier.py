@@ -18,6 +18,7 @@ from typing import Iterable, List, Optional
 import httpx
 
 from .sizes import format_sizes_compact
+from .sources import SOURCES, source_emojis, source_labels
 
 log = logging.getLogger(__name__)
 
@@ -44,22 +45,10 @@ def _fmt_brl(v) -> str:
 
 # Emoji por loja — ajuda a varrer visualmente quando vêm várias fontes.
 SOURCE_EMOJI = {
-    "ous": "🟧",        # OUS oficial
-    "netshoes": "🟦",   # Netshoes Clube
-    "centauro": "🟥",   # Centauro
-    "baw": "⚫",
-    "netshoes_baw": "🟪",
-    "netshoes_adidas": "🟢",
-    "netshoes_adidas_originals": "🔵",
+    **source_emojis(),
 }
 SOURCE_LABEL = {
-    "ous": "OUS oficial",
-    "netshoes": "Netshoes Clube",
-    "centauro": "Centauro",
-    "baw": "BaW Clothing",
-    "netshoes_baw": "Netshoes BaW",
-    "netshoes_adidas": "Netshoes Adidas",
-    "netshoes_adidas_originals": "Netshoes Adidas Originals",
+    **source_labels(),
 }
 
 
@@ -260,14 +249,17 @@ def _resolve_creds(bot_token, chat_id, dry_run):
 MENU_KEYBOARD = {
     "inline_keyboard": [
         [
-            {"text": "🟧 OUS", "callback_data": "run:ous"},
-            {"text": "🟦 Netshoes", "callback_data": "run:netshoes"},
-            {"text": "🟥 Centauro", "callback_data": "run:centauro"},
+            {"text": f"{SOURCES['ous'].emoji} OUS", "callback_data": "run:ous"},
+            {"text": f"{SOURCES['netshoes'].emoji} Netshoes", "callback_data": "run:netshoes"},
+            {"text": f"{SOURCES['centauro'].emoji} Centauro", "callback_data": "run:centauro"},
         ],
         [
-            {"text": "⚫ BaW", "callback_data": "run:baw"},
-            {"text": "🟢 Adidas", "callback_data": "run:netshoes_adidas"},
-            {"text": "🔵 Adidas Org.", "callback_data": "run:netshoes_adidas_originals"},
+            {"text": f"{SOURCES['baw'].emoji} BaW", "callback_data": "run:baw"},
+            {"text": f"{SOURCES['umbro'].emoji} Umbro", "callback_data": "run:umbro"},
+        ],
+        [
+            {"text": f"{SOURCES['netshoes_adidas'].emoji} Adidas", "callback_data": "run:netshoes_adidas"},
+            {"text": f"{SOURCES['netshoes_adidas_originals'].emoji} Adidas Org.", "callback_data": "run:netshoes_adidas_originals"},
         ],
         [
             {"text": "🔄 Rodar Todas", "callback_data": "run:all"},
@@ -361,7 +353,7 @@ def send_alert(changes: dict, *, bot_token=None, chat_id=None, dry_run=False, re
         header_bits.append(f"📉 {counts['weaker']} piorou")
     if counts.get("price_up"):
         header_bits.append(f"📈 {counts['price_up']} subiu")
-    header = f"<b>🛒 ÖUS — {' · '.join(header_bits)}</b>"
+    header = f"<b>🛒 Price Monitor — {' · '.join(header_bits)}</b>"
 
     # Ordem visual: novidades primeiro, depois sinais negativos.
     lines: List[str] = []
@@ -393,7 +385,7 @@ def send_digest(changes: dict, *, period_label: str = "hoje",
         ("ended", "🔚", "Promoções terminaram"),
         ("price_up", "📈", "Preços subiram"),
     ]
-    header = f"<b>📊 Resumo OUS — {escape(period_label)}</b>"
+    header = f"<b>📊 Resumo Price Monitor — {escape(period_label)}</b>"
     lines: List[str] = []
     for cat, emoji, title in sections_order:
         rows = changes.get(cat) or []

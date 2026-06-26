@@ -2,11 +2,11 @@
 
 ## Project
 
-**ous-price-monitor** — Daily price monitor for streetwear/shoe brands: **OÜS**, **BaW Clothing**, and **Adidas** (Adidas only via Netshoes Club). Designed to run once per day from cron on a personal Linux machine.
+**ous-price-monitor** — Daily price monitor for streetwear/shoe brands: **OÜS**, **BaW Clothing**, **Adidas**, and **Umbro**.
 
 - **Language:** Python 3.8 (system Python, uses `from __future__ import annotations`)
 - **Dependencies:** httpx, selectolax, curl_cffi, FastAPI, uvicorn, google-antigravity, Playwright
-- **Database:** SQLite at `data/prices.db` (~12.3 MB)
+- **Database:** SQLite at `data/prices.db` with product snapshots plus `runs`/`source_runs`
 - **Notifications:** Telegram bot (alert/digest modes)
 - **Deploy:** Docker Compose on VPS Digital Ocean, reverse proxy via Traefik (Coolify)
 - **Domain:** `https://price-monitor.thierryrenematos.tec.br`
@@ -16,8 +16,9 @@
 
 Three layers under `src/ous_monitor/`:
 
-1. **Scrapers** (`scrapers/{ous,netshoes,centauro,baw}.py`) — each implements `Scraper` protocol: `source` string + `fetch_all() -> list[Product]`. Must fully paginate all pages.
-2. **Storage** (`storage.py`) — SQLite with `products` + `price_history` tables. `record_run()` upserts + appends observations. `find_changes()` detects 4 categories: `new_promo`, `ended`, `weaker`, `price_up`.
+1. **Sources registry** (`sources.py`) — one source of truth for scraper factory, label, emoji, dashboard colors, CI eligibility and Playwright requirement.
+2. **Scrapers** (`scrapers/{ous,netshoes,centauro,baw,umbro}.py`) — each implements `Scraper` protocol: `source` string + `fetch_all() -> list[Product]`. Must fully paginate all pages.
+3. **Storage** (`storage.py`) — SQLite with `products`, `price_history`, `runs`, and `source_runs`. `record_run()` upserts + appends observations. `find_changes()` detects 4 categories: `new_promo`, `ended`, `weaker`, `price_up`.
 3. **CLI** (`cli.py`) — orchestrates scraping, persistence, change detection, and notification dispatch.
 
 Additional modules: `filters.py` (gender/size filters), `gender.py` (vocabulary), `sizes.py` (size parsing), `notifier.py` (Telegram), `server.py` (FastAPI webhook), `models.py` (Product dataclass), `html_generator.py` (HTML reports).
@@ -33,6 +34,7 @@ Additional modules: `filters.py` (gender/size filters), `gender.py` (vocabulary)
 | `netshoes_baw` | clube.netshoes.com.br | BaW Clothing | ~50 | Same as netshoes, filtered by marca |
 | `netshoes_adidas` | clube.netshoes.com.br | Adidas | ~6900 | 164 pages, ~4min scraping, no Adidas Originals |
 | `netshoes_adidas_originals` | clube.netshoes.com.br | Adidas Originals | ~92 | 4 pages, marca separada (marca=adidas-originals) |
+| `umbro` | umbro.com.br/outlet | Umbro | ~889 | VTEX coleção 921 |
 
 ## Commands
 
@@ -50,6 +52,9 @@ PYTHONPATH=src python -m ous_monitor.cli report --days 7
 
 # Current sale snapshot
 PYTHONPATH=src python -m ous_monitor.cli list --limit 50
+
+# Operational source status
+PYTHONPATH=src python -m ous_monitor.cli status
 
 # Dry-run filter cleanup
 PYTHONPATH=src python -m ous_monitor.cli purge
@@ -104,6 +109,9 @@ From `.env` (auto-loaded by CLI):
 - `TELEGRAM_CHAT_ID` — Chat ID for notifications
 - `CENTAURO_PROXY` (optional) — Proxy for Centauro scraper (`socks5://`, `http://`, `https://`)
 - `GEMINI_API_KEY` — For AI chat features in Telegram bot
+- `WEBHOOK_ADMIN_TOKEN` — protects `/setup-webhook` and `/status`
+- `TELEGRAM_WEBHOOK_SECRET` — Telegram secret token validated in `/webhook`
+- `TELEGRAM_ALLOWED_CHAT_IDS` — optional comma-separated chat allowlist
 
 ## Deployment Details
 

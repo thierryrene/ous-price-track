@@ -1,7 +1,7 @@
 # ous-price-monitor
 
-Monitor diário de promoções das marcas **ÖUS**, **BaW Clothing** e **Adidas**
-(Adidas só no Clube Netshoes). Varre 6 fontes, guarda histórico de preços em
+Monitor diário de promoções das marcas **ÖUS**, **BaW Clothing**, **Adidas** e
+**Umbro** (Adidas só no Clube Netshoes). Varre 8 fontes, guarda histórico de preços em
 SQLite e relata produtos que **entraram em promoção** desde a última execução.
 
 ## Fontes
@@ -9,11 +9,13 @@ SQLite e relata produtos que **entraram em promoção** desde a última execuç�
 | Fonte | URL | Estratégia | Status |
 |---|---|---|---|
 | `ous` | `ous.com.br/garimpo` (outlet oficial) | API VTEX pública (`catalog_system/pub/products/search`) | ✅ ~144 produtos |
+| `umbro` | `umbro.com.br/outlet` (outlet oficial) | API VTEX pública (`catalog_system/pub/products/search`, coleção `921`) | ✅ ~889 produtos |
 | `netshoes` | `clube.netshoes.com.br/busca?q=ous&marca=ous` (preço de assinante) | HTML + parse de `window.__INITIAL_STATE__` | ✅ ~204 produtos |
 | `centauro` | `centauro.com.br/busca/ous` | Playwright headless + parse de `__NEXT_DATA__` | ⚠️ Akamai BMP — frequentemente bloqueia. Não derruba o pipeline (loga warning e segue). |
 | `baw` | `bawclothing.com.br/roupas/?pagina=N&tamanho=24` (catálogo completo) | HTML SSR Wake/FBits — combina JSON-LD `ItemList` com dataLayer `Hotsite products` (match por item_id no slug) | ✅ ~587 produtos |
 | `netshoes_baw` | `clube.netshoes.com.br/busca?marca=baw-clothing` | Mesma estratégia da fonte `netshoes`, filtrando por marca BaW Clothing | ✅ ~50 produtos |
 | `netshoes_adidas` | `clube.netshoes.com.br/busca?marca=adidas` | Mesma estratégia da fonte `netshoes`, filtrando por marca Adidas. **Catálogo grande**: ~164 páginas, ~4min de scraping; não inclui Adidas Originals (linha separada) | ✅ ~6900 produtos |
+| `netshoes_adidas_originals` | `clube.netshoes.com.br/busca?marca=adidas-originals` | Mesma estratégia da fonte `netshoes`, linha Adidas Originals separada | ✅ ~92 produtos |
 
 ## Setup
 
@@ -62,6 +64,19 @@ Como obter as credenciais:
    O número em `"chat":{"id": ...}` é seu CHAT_ID.
 3. Cole ambos no `.env`.
 
+Para produção via webhook, defina também:
+
+- `WEBHOOK_ADMIN_TOKEN` — protege `/setup-webhook` e `/status`.
+- `TELEGRAM_WEBHOOK_SECRET` — secret enviado ao Telegram e validado em `/webhook`.
+- `TELEGRAM_ALLOWED_CHAT_IDS` — lista opcional de chats permitidos; se vazio,
+  o servidor usa `TELEGRAM_CHAT_ID`.
+
+Configuração segura do webhook:
+
+```bash
+curl "https://price-monitor.thierryrenematos.tec.br/setup-webhook?url=https://price-monitor.thierryrenematos.tec.br&token=$WEBHOOK_ADMIN_TOKEN"
+```
+
 Para validar sem disparar mensagem real:
 
 ```bash
@@ -92,11 +107,18 @@ ous-monitor report --days 7
 # Snapshot atual: tudo que está em promoção agora
 ous-monitor list --limit 100
 
+# Saúde operacional das fontes
+ous-monitor status
+
 # Verboso (DEBUG)
 ous-monitor -v run
 ```
 
 Banco SQLite em `data/prices.db` (override com `--db /caminho/outro.db`).
+
+O banco registra execuções em `runs` e `source_runs`, além dos snapshots de
+preço em `price_history`. Isso permite auditar a última execução bem-sucedida
+por fonte, contagens brutas/filtradas e falhas parciais.
 
 ## Execução automatizada
 
@@ -106,6 +128,11 @@ O workflow [.github/workflows/monitor.yml](.github/workflows/monitor.yml) roda
 o scraper 2× ao dia (12h e 21h UTC = 9h e 18h BRT) e commita o
 `data/prices.db` atualizado de volta no repo — assim o histórico persiste
 entre execuções.
+
+Se o Coolify/VPS também rodar scrapers on-demand pelo Telegram, escolha uma
+fonte oficial de verdade para o banco: GitHub Actions versionando `prices.db`
+ou o volume persistente da VPS. Rodar os dois sem sincronização pode deixar o
+dashboard e o bot olhando históricos diferentes.
 
 Setup único:
 
@@ -128,9 +155,8 @@ Setup único:
 4. Dispare manualmente no GitHub: `Actions → monitor → Run workflow`.
 
 **Centauro não é executada no Actions** — IPs dos runners GitHub são
-agressivamente bloqueados pelo Akamai. O workflow chama
-`run --sources ous netshoes`. Para incluir Centauro, rode local com proxy
-ou mantenha um cron paralelo na sua máquina.
+agressivamente bloqueados pelo Akamai. Para incluir Centauro, rode local/VPS
+com proxy ou mantenha um cron paralelo na sua máquina.
 
 ### Cron local (alternativa)
 
@@ -149,6 +175,10 @@ Cada execução grava um snapshot em `price_history`. Um produto é considerado
   tinha um preço maior).
 
 Isso é calculado via SQL window function (`LAG`) em `storage.find_new_promotions`.
+
+Cada execução tem um `run_id`; as fontes individuais são registradas em
+`source_runs`. Esse histórico operacional é usado pelo comando `status` e pelo
+payload do dashboard.
 
 ## Pegadinhas conhecidas
 

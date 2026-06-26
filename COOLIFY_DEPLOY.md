@@ -4,7 +4,9 @@ Este documento descreve o plano de ação, o contexto de desenvolvimento e os pa
 
 A aplicação conta com um **sistema híbrido**:
 1. **Determinístico por Botões:** Cliques rápidos no Telegram que acionam os scrapers das lojas.
-2. **Cognitivo por Chat (IA):** Integração com o **Google Antigravity (AGY) SDK**, permitindo conversar com o bot em linguagem natural sobre o histórico de preços.
+2. **Cognitivo por Chat (IA):** Código do agente existe, mas o webhook atual
+   responde mensagens comuns com o menu para manter estabilidade. Reative a IA
+   somente após validar a política de SQL read-only e rate limit.
 
 ---
 
@@ -16,7 +18,7 @@ Migramos a infraestrutura para rodar em modo servidor na VPS da Digital Ocean ge
 1. **Servidor API Webhook Híbrido (`src/ous_monitor/server.py`):** Servidor FastAPI que gerencia webhooks do Telegram. 
    * Mensagens de callback (clique nos botões inline) disparam tarefas tradicionais de scraping em segundo plano.
    * Mensagens de texto comum são repassadas ao **Agente AGY**, que usa inteligência artificial para ler e interagir.
-2. **Agente de IA (AGY SDK):** Configurado para usar o modelo `gemini-1.5-flash` para processar as mensagens do chat. O agente possui duas ferramentas em Python:
+2. **Agente de IA (AGY SDK):** Configurado para usar o modelo `gemini-1.5-flash` quando reativado. O agente possui duas ferramentas em Python:
    * `query_prices_db`: Executa queries SQL no banco SQLite local para extrair histórico de preços e insights.
    * `run_store_scraper`: Dispara o scraper de uma loja e atualiza a base de dados.
 3. **Notificador (`src/ous_monitor/notifier.py`):** Anexa o teclado de menu do bot no final de cada resposta gerada pelo monitor ou pelo agente da IA, permitindo continuidade na interação.
@@ -39,7 +41,10 @@ Migramos a infraestrutura para rodar em modo servidor na VPS da Digital Ocean ge
 Na aba **Environment Variables** do Coolify, adicione:
 * `TELEGRAM_BOT_TOKEN`: O token fornecido pelo `@BotFather`.
 * `TELEGRAM_CHAT_ID`: O ID do chat onde os alertas devem ser entregues.
-* `GEMINI_API_KEY`: **[OBRIGATÓRIO PARA A IA]** Sua chave do Gemini API (obtenha em [Google AI Studio](https://aistudio.google.com/app/api-keys)) para que o agente AGY consiga pensar e rodar as ferramentas.
+* `WEBHOOK_ADMIN_TOKEN`: Token administrativo para `/setup-webhook` e `/status`.
+* `TELEGRAM_WEBHOOK_SECRET`: Secret validado em todo POST recebido em `/webhook`.
+* `TELEGRAM_ALLOWED_CHAT_IDS`: Lista opcional de chats permitidos; se vazio, usa `TELEGRAM_CHAT_ID`.
+* `GEMINI_API_KEY`: Necessário apenas se a IA for reativada.
 * `CENTAURO_PROXY` *(Opcional)*: URL do proxy se for usar para contornar o bloqueio do Akamai na Centauro.
 
 ### Passo 4: Build e Deploy
@@ -49,7 +54,7 @@ Na aba **Environment Variables** do Coolify, adicione:
 ### Passo 5: Ativação do Webhook do Telegram
 Uma vez que a aplicação esteja ativa na internet:
 1. Acesse no seu navegador a URL de setup passando o seu domínio:
-   `https://ous-bot.seu-dominio.com/setup-webhook?url=https://ous-bot.seu-dominio.com`
+   `https://ous-bot.seu-dominio.com/setup-webhook?url=https://ous-bot.seu-dominio.com&token=SEU_WEBHOOK_ADMIN_TOKEN`
 2. Você deverá ver o retorno confirmando o sucesso:
    ```json
    {"ok": true, "result": true, "description": "Webhook was set"}
@@ -62,7 +67,7 @@ Uma vez que a aplicação esteja ativa na internet:
 Com o webhook ativo e a `GEMINI_API_KEY` configurada no Coolify, abra a conversa com seu bot no Telegram e tente interagir das duas formas:
 
 1. **Via Botões:** Clique em `🟧 OUS` ou `📊 Snapshot Geral` para rodar o scraping tradicional.
-2. **Via Chat (IA):** Envie mensagens de texto como:
+2. **Via Chat (IA, se reativada):** Envie mensagens de texto como:
    * *"Agy, busque o calçado ÖUS Imigrante e me diga qual loja tem o preço mais baixo hoje."*
    * *"Qual foi a maior queda de preço registrada nas últimas semanas no banco de dados?"*
    * *"Rode a varredura da Netshoes para mim, por favor."*

@@ -6,6 +6,7 @@ import os
 import sqlite3
 import threading
 from pathlib import Path
+from urllib.parse import urlparse
 import httpx
 from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
@@ -13,7 +14,8 @@ from fastapi.responses import JSONResponse
 from datetime import datetime, timezone, timedelta
 from .cli import cmd_run, cmd_snapshot, DEFAULT_DB, DEFAULT_ENV
 from .notifier import send_menu_message, API_BASE, MENU_KEYBOARD, CATEGORY_KEYBOARD, send_digest
-from .storage import connect, find_changes
+from .sources import source_keys
+from .storage import connect, find_changes, latest_source_runs
 
 log = logging.getLogger("ous_monitor.server")
 
@@ -35,24 +37,60 @@ def query_prices_db(sql_query: str) -> str:
         sql_query: Uma string de consulta SQL SELECT válida.
     """
     try:
-        with sqlite3.connect(DEFAULT_DB) as conn:
+        sql = sql_query.strip()
+        sql_lower = sql.lower()
+        if not (sql_lower.startswith("select") or sql_lower.startswith("with")):
+            return "Erro: somente consultas SELECT/WITH de leitura são permitidas."
+        if ";" in sql.rstrip(";"):
+            return "Erro: apenas uma instrução SQL por consulta é permitida."
+        db_uri = f"file:{DEFAULT_DB}?mode=ro"
+        with sqlite3.connect(db_uri, uri=True) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute(sql_query)
-            rows = cursor.fetchall()
+            cursor.execute(sql)
+            rows = cursor.fetchmany(100)
             return str([dict(row) for row in rows])
     except Exception as e:
         return f"Erro ao executar query: {str(e)}"
+
+
+def _allowed_chat_ids() -> set[str]:
+    raw = os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS") or os.environ.get("TELEGRAM_CHAT_ID") or ""
+    return {part.strip() for part in raw.split(",") if part.strip()}
+
+
+def _is_allowed_chat(chat_id) -> bool:
+    allowed = _allowed_chat_ids()
+    return not allowed or str(chat_id) in allowed
+
+
+def _webhook_secret_valid(request: Request) -> bool:
+    expected = os.environ.get("TELEGRAM_WEBHOOK_SECRET")
+    if not expected:
+        return True
+    return request.headers.get("X-Telegram-Bot-Api-Secret-Token") == expected
+
+
+def _admin_token_valid(request: Request, token: str | None) -> bool:
+    expected = os.environ.get("WEBHOOK_ADMIN_TOKEN")
+    if not expected:
+        return False
+    supplied = token or request.headers.get("X-Admin-Token")
+    return supplied == expected
 
 
 def run_store_scraper(store: str) -> str:
     """Executa a varredura (scraping) de preços em uma loja específica e atualiza o banco de dados.
 
     Args:
-        store: A loja para varrer. Deve ser 'ous', 'netshoes' ou 'centauro'.
+        store: A loja para varrer.
     """
-    if store not in ("ous", "netshoes", "centauro", "baw", "netshoes_baw", "netshoes_adidas", "netshoes_adidas_originals"):
-        return f"Erro: Loja desconhecida '{store}'. Escolha entre 'ous', 'netshoes', 'centauro', 'baw', 'netshoes_baw', 'netshoes_adidas' ou 'netshoes_adidas_originals'."
+    valid_stores = tuple(source_keys())
+    if store not in valid_stores:
+        return (
+            f"Erro: Loja desconhecida '{store}'. Escolha entre "
+            f"{', '.join(valid_stores)}."
+        )
     try:
         args = argparse.Namespace(
             db=DEFAULT_DB,
@@ -325,14 +363,55 @@ def health():
     return {"status": "healthy"}
 
 
+@app.get("/health/ready")
+def health_ready():
+    checks = {
+        "db": False,
+        "data_writable": False,
+        "telegram_token": bool(os.environ.get("TELEGRAM_BOT_TOKEN")),
+    }
+    try:
+        with connect(DEFAULT_DB) as conn:
+            conn.execute("SELECT 1").fetchone()
+        checks["db"] = True
+    except Exception as e:
+        checks["db_error"] = str(e)
+    try:
+        DEFAULT_DB.parent.mkdir(parents=True, exist_ok=True)
+        probe = DEFAULT_DB.parent / ".health_write"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        checks["data_writable"] = True
+    except Exception as e:
+        checks["data_error"] = str(e)
+    status = "ready" if checks["db"] and checks["data_writable"] and checks["telegram_token"] else "not_ready"
+    return JSONResponse({"status": status, "checks": checks}, status_code=200 if status == "ready" else 503)
+
+
+@app.get("/status")
+def status(request: Request, token: str | None = None):
+    if not _admin_token_valid(request, token):
+        return JSONResponse({"error": "WEBHOOK_ADMIN_TOKEN ausente ou inválido"}, status_code=403)
+    with connect(DEFAULT_DB) as conn:
+        rows = latest_source_runs(conn)
+    return {
+        "sources": [dict(row) for row in rows],
+    }
+
+
 @app.get("/setup-webhook")
-def setup_webhook(url: str):
+def setup_webhook(request: Request, url: str, token: str | None = None):
     """Auxiliar para configurar o webhook do Telegram.
     Ex: GET /setup-webhook?url=https://seu-app-coolify.com
     """
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not bot_token:
         return {"error": "TELEGRAM_BOT_TOKEN não está definido nas variáveis de ambiente"}
+    if not _admin_token_valid(request, token):
+        return JSONResponse({"error": "WEBHOOK_ADMIN_TOKEN ausente ou inválido"}, status_code=403)
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.netloc:
+        return JSONResponse({"error": "url precisa ser HTTPS absoluta"}, status_code=400)
 
     webhook_url = f"{url.rstrip('/')}/webhook"
     log.info("Configurando webhook do Telegram para: %s", webhook_url)
@@ -340,7 +419,11 @@ def setup_webhook(url: str):
     with httpx.Client(timeout=15.0) as client:
         resp = client.post(
             f"{API_BASE}/bot{bot_token}/setWebhook",
-            json={"url": webhook_url},
+            json={
+                "url": webhook_url,
+                **({"secret_token": os.environ["TELEGRAM_WEBHOOK_SECRET"]}
+                   if os.environ.get("TELEGRAM_WEBHOOK_SECRET") else {}),
+            },
         )
     return resp.json()
 
@@ -352,6 +435,8 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
     if not bot_token:
         log.error("TELEGRAM_BOT_TOKEN não configurado no ambiente.")
         return JSONResponse({"status": "error", "message": "Bot token not configured"}, status_code=500)
+    if not _webhook_secret_valid(request):
+        return JSONResponse({"status": "forbidden"}, status_code=403)
 
     try:
         data = await request.json()
@@ -368,6 +453,9 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             return JSONResponse({"status": "no_message_in_callback"})
 
         chat_id = message["chat"]["id"]
+        if not _is_allowed_chat(chat_id):
+            log.warning("Callback ignorado de chat não autorizado: %s", chat_id)
+            return JSONResponse({"status": "forbidden"}, status_code=403)
 
         # Responde ao Telegram imediatamente para remover o estado de carregamento do botão
         async with httpx.AsyncClient() as client:
@@ -380,8 +468,6 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
         # Determina a ação
         sources = None
         is_snapshot = False
-
-        from .notifier import _send_messages
 
         if callback_data == "run:snapshot":
             is_snapshot = True
@@ -405,8 +491,15 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             return JSONResponse({"status": "daily_task_queued"})
         elif callback_data.startswith("run:"):
             action = callback_data.split(":")[1]
-            if action != "all":
+            if action == "cancel_load":
+                send_menu_message(bot_token=bot_token, chat_id=chat_id)
+                return JSONResponse({"status": "menu_sent"})
+            if action == "all":
+                sources = None
+            elif action in source_keys():
                 sources = [action]
+            else:
+                return JSONResponse({"status": "unknown_source"}, status_code=400)
         else:
             return JSONResponse({"status": "unknown_callback_data"})
 
@@ -418,6 +511,9 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
     if "message" in data:
         message = data["message"]
         chat_id = message["chat"]["id"]
+        if not _is_allowed_chat(chat_id):
+            log.warning("Mensagem ignorada de chat não autorizado: %s", chat_id)
+            return JSONResponse({"status": "forbidden"}, status_code=403)
         text = message.get("text", "")
 
         if not text:

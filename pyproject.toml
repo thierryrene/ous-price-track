@@ -1,7 +1,7 @@
 [project]
 name = "ous-price-monitor"
 version = "0.1.0"
-description = "Monitora promoções da marca OUS em ous.com.br, centauro.com.br e netshoes.com.br"
+description = "Monitora promoções de OUS, BaW, Adidas e Umbro em lojas oficiais e marketplaces"
 requires-python = ">=3.8"
 dependencies = [
     "httpx>=0.27",

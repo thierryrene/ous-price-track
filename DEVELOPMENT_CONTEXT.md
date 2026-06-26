@@ -35,29 +35,30 @@ Este documento registra o estado atual do projeto **ous-price-monitor** no servi
 As variáveis de ambiente foram recuperadas de forma segura do GitHub Actions via workflow temporário e persistidas em [.env](file:///root/price-monitor-thierry/.env):
 * `TELEGRAM_BOT_TOKEN`
 * `TELEGRAM_CHAT_ID`
-* `GEMINI_API_KEY` (configurada com a chave ativa fornecida pelo usuário)
+* `WEBHOOK_ADMIN_TOKEN`
+* `TELEGRAM_WEBHOOK_SECRET`
+* `TELEGRAM_ALLOWED_CHAT_IDS` (opcional; se vazio, usa `TELEGRAM_CHAT_ID`)
+* `GEMINI_API_KEY` (somente se a IA for reativada)
 
 ---
 
 ## 🕹️ Evolução da Interface do Bot (Telegram)
 
-Para focar na **interface determinística por botões** e deixar a IA em segundo plano, reestruturamos a lógica em [server.py](file:///root/price-monitor-thierry/src/ous_monitor/server.py) e [notifier.py](file:///root/price-monitor-thierry/src/ous_monitor/notifier.py):
+Para focar na **interface determinística por botões** e deixar a IA em segundo plano, a lógica atual em [server.py](file:///root/price-monitor-thierry/src/ous_monitor/server.py) e [notifier.py](file:///root/price-monitor-thierry/src/ous_monitor/notifier.py) usa menu inline direto e valida webhook/chat quando as variáveis de segurança estão configuradas.
 
-### 1. Menus Inline Aninhados (Navegação GUI)
-As telas se atualizam no mesmo balão de texto por meio de `editMessageText`, evitando poluição visual:
-* **Menu Principal (`MAIN_KEYBOARD`):**
-  * `🔍 Consultar DB` -> Encaminha para consulta de promoções salvas.
-  * `⚡ Rodar Scrapers` -> Encaminha para gatilhos de varredura ao vivo.
-  * `📊 Snapshot Geral` -> Executa o snapshot imediato de todas as lojas.
-  * `ℹ️ Status Varreduras` -> Exibe as últimas execuções de cada marca no DB.
-* **Menu do Banco de Dados (`DB_KEYBOARD`):**
-  * `🟧 ÖUS`, `🟦 Netshoes` e `🟥 Centauro` que realizam queries SQLite imediatas e retornam as ofertas ativas no chat.
-  * *Melhoria:* O botão da Netshoes agrupa automaticamente `netshoes`, `netshoes_baw` e `netshoes_adidas`.
-* **Menu de Scrapers (`SCRAPERS_KEYBOARD`):**
-  * Gatilhos individuais ou coletivos (`🔄 Rodar Todas`) para rodar os scrapers do Playwright em background.
+### 1. Menu Inline Principal
+O `MENU_KEYBOARD` é gerado a partir do registry de fontes e permite rodar fontes individuais, `Rodar Todas`, `Snapshot Geral` e o menu de promoções das últimas 24h.
 
 ### 2. Bypass de IA no Chat de Texto
-* Qualquer mensagem de texto comum enviada ao bot (que não seja `/start` ou `/menu`) agora devolve a mensagem padrão para utilizar os botões interativos, ignorando a execução da IA/Gemini para economizar tokens e garantir estabilidade.
+* Qualquer mensagem de texto comum enviada ao bot (que não seja `/start` ou `/menu`) devolve a mensagem padrão para utilizar os botões interativos, ignorando a execução da IA/Gemini para economizar tokens e garantir estabilidade.
+
+### 3. Rastreabilidade Operacional
+O banco possui `runs` e `source_runs`, permitindo auditar última execução por fonte, contagens brutas/filtradas, falhas e `run_id`. Use:
+
+```bash
+PYTHONPATH=src python -m ous_monitor.cli status
+curl "https://price-monitor.thierryrenematos.tec.br/status?token=$WEBHOOK_ADMIN_TOKEN"
+```
 
 ---
 
@@ -75,7 +76,7 @@ No diretório `/root/price-monitor-thierry`:
   ```
 * **Forçar Reconfiguração do Webhook:**
   ```bash
-  curl -s https://price-monitor.thierryrenematos.tec.br/setup-webhook?url=https://price-monitor.thierryrenematos.tec.br
+  curl -s "https://price-monitor.thierryrenematos.tec.br/setup-webhook?url=https://price-monitor.thierryrenematos.tec.br&token=$WEBHOOK_ADMIN_TOKEN"
   ```
 
 ### Como Reativar a IA (Agy) se desejar futuramente:

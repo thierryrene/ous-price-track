@@ -68,13 +68,13 @@ jobs:
             echo "hash=missing" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: "Rodar monitor (ÖUS + BaW — site próprio + Clube Netshoes)"
+      - name: "Rodar monitor (fontes compatíveis com GitHub Actions)"
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           PYTHONPATH=src python -m ous_monitor.cli run \
-            --sources ous netshoes baw netshoes_baw netshoes_adidas netshoes_adidas_originals \
+            --sources ous umbro netshoes baw netshoes_baw netshoes_adidas netshoes_adidas_originals \
             --mode "${{ steps.pick_mode.outputs.mode }}"
 
       - name: Commitar DB se houve mudança
