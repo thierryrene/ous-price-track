@@ -15,8 +15,10 @@ from .notifier import (
     PENDING_MESSAGES_CACHE, send_telegram_batch, MAX_MESSAGES_PER_BATCH,
     send_telegram_messages, format_error_message, format_brl, discount_intensity_emoji,
 )
+from urllib.parse import urlparse
 from .services import CatalogService, MonitorService, ProductFilters, run_exclusive
-from .storage import connect, find_changes
+from .sources import source_keys
+from .storage import connect, find_changes, latest_source_runs
 
 log = logging.getLogger("ous_monitor.server")
 
@@ -85,11 +87,18 @@ def query_prices_db(sql_query: str) -> str:
         sql_query: Uma string de consulta SQL SELECT válida.
     """
     try:
-        with sqlite3.connect(DEFAULT_DB) as conn:
+        sql = sql_query.strip()
+        sql_lower = sql.lower()
+        if not (sql_lower.startswith("select") or sql_lower.startswith("with")):
+            return "Erro: somente consultas SELECT/WITH de leitura são permitidas."
+        if ";" in sql.rstrip(";"):
+            return "Erro: apenas uma instrução SQL por consulta é permitida."
+        db_uri = f"file:{DEFAULT_DB}?mode=ro"
+        with sqlite3.connect(db_uri, uri=True) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute(sql_query)
-            rows = cursor.fetchall()
+            cursor.execute(sql)
+            rows = cursor.fetchmany(100)
             return str([dict(row) for row in rows])
     except Exception as e:
         return f"Erro ao executar query: {str(e)}"
@@ -99,10 +108,12 @@ def run_store_scraper(store: str) -> str:
     """Executa a varredura (scraping) de preços em uma loja específica e atualiza o banco de dados.
 
     Args:
-        store: A loja para varrer. Deve ser 'ous', 'netshoes' ou 'centauro'.
+        store: A loja para varrer (qualquer chave de `sources.SOURCES`).
     """
-    if store not in ("ous", "netshoes", "centauro", "baw", "netshoes_baw", "netshoes_adidas", "netshoes_adidas_originals", "approve"):
-        return f"Erro: Loja desconhecida '{store}'. Escolha entre 'ous', 'netshoes', 'centauro', 'baw', 'netshoes_baw', 'netshoes_adidas', 'netshoes_adidas_originals' ou 'approve'."
+    valid_stores = tuple(source_keys())
+    if store not in valid_stores:
+        return (f"Erro: Loja desconhecida '{store}'. Escolha entre "
+                f"{', '.join(valid_stores)}.")
     try:
         result = run_exclusive(
             lambda: MonitorService(DEFAULT_DB).run(
@@ -652,17 +663,61 @@ def health():
     return {"status": "healthy"}
 
 
+@app.get("/health/ready")
+def health_ready():
+    """Readiness: DB acessível, diretório de dados gravável, token presente."""
+    checks = {
+        "db": False,
+        "data_writable": False,
+        "telegram_token": bool(os.environ.get("TELEGRAM_BOT_TOKEN")),
+    }
+    try:
+        with connect(DEFAULT_DB) as conn:
+            conn.execute("SELECT 1").fetchone()
+        checks["db"] = True
+    except Exception as e:
+        checks["db_error"] = str(e)
+    try:
+        DEFAULT_DB.parent.mkdir(parents=True, exist_ok=True)
+        probe = DEFAULT_DB.parent / ".health_write"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        checks["data_writable"] = True
+    except Exception as e:
+        checks["data_error"] = str(e)
+    ready = checks["db"] and checks["data_writable"] and checks["telegram_token"]
+    status = "ready" if ready else "not_ready"
+    return JSONResponse({"status": status, "checks": checks},
+                        status_code=200 if ready else 503)
+
+
+@app.get("/status")
+def status(admin_token: str | None = None, token: str | None = None):
+    """Saúde por fonte (tabela source_runs). Protegido por WEBHOOK_ADMIN_TOKEN."""
+    expected_admin = os.environ.get("WEBHOOK_ADMIN_TOKEN") or os.environ.get("ADMIN_TOKEN")
+    if not expected_admin or (admin_token or token) != expected_admin:
+        return JSONResponse({"status": "forbidden"}, status_code=403)
+    with connect(DEFAULT_DB) as conn:
+        rows = latest_source_runs(conn)
+    return {"sources": [dict(row) for row in rows]}
+
+
 @app.get("/setup-webhook")
-def setup_webhook(url: str, admin_token: str | None = None):
+def setup_webhook(url: str, admin_token: str | None = None, token: str | None = None):
     """Auxiliar para configurar o webhook do Telegram.
-    Ex: GET /setup-webhook?url=https://seu-app-coolify.com
+    Ex: GET /setup-webhook?url=https://seu-app-coolify.com&token=...
+    Aceita o token via `token` ou `admin_token` (compatibilidade).
     """
-    expected_admin = os.environ.get("ADMIN_TOKEN")
-    if not expected_admin or admin_token != expected_admin:
+    expected_admin = os.environ.get("WEBHOOK_ADMIN_TOKEN") or os.environ.get("ADMIN_TOKEN")
+    if not expected_admin or (admin_token or token) != expected_admin:
         return JSONResponse({"status": "forbidden"}, status_code=403)
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not bot_token:
         return {"error": "TELEGRAM_BOT_TOKEN não está definido nas variáveis de ambiente"}
+
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.netloc:
+        return JSONResponse({"error": "url precisa ser HTTPS absoluta"}, status_code=400)
 
     webhook_url = f"{url.rstrip('/')}/webhook"
     payload = {"url": webhook_url}

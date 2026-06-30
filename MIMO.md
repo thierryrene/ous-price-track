@@ -2,11 +2,11 @@
 
 ## Project
 
-**ous-price-monitor** — Daily price monitor for streetwear/shoe brands: **OÜS**, **BaW Clothing**, and **Adidas** (Adidas only via Netshoes Club). GitHub Actions runs the scheduled monitor; Coolify/FastAPI serves Telegram on-demand actions.
+**ous-price-monitor** — Daily price monitor for streetwear/shoe brands: **OÜS**, **BaW Clothing**, **Adidas**, **Umbro**, and **Approve** (Adidas only via Netshoes Club). GitHub Actions runs the scheduled monitor; Coolify/FastAPI serves Telegram on-demand actions.
 
 - **Language:** Python 3.10+ (uses modern type syntax and `from __future__ import annotations`)
 - **Dependencies:** httpx, selectolax, curl_cffi, FastAPI, uvicorn, google-antigravity, Playwright
-- **Database:** SQLite at `data/prices.db` (~12.3 MB)
+- **Database:** SQLite at `data/prices.db` with product snapshots plus `runs`/`source_runs`
 - **Notifications:** Telegram bot (alert/digest modes)
 - **Deploy:** Docker Compose on VPS Digital Ocean, reverse proxy via Traefik (Coolify)
 - **Domain:** `https://price-monitor.thierryrenematos.tec.br`
@@ -14,11 +14,12 @@
 
 ## Architecture
 
-Three layers under `src/ous_monitor/`:
+Layers under `src/ous_monitor/`:
 
-1. **Scrapers** (`scrapers/*.py`) — each implements `Scraper` protocol: `source` string + `fetch_all() -> list[Product]`. Must fully paginate all pages.
-2. **Storage/services** (`storage.py`, `services.py`) — SQLite persistence, typed run/change contracts, monitor orchestration, catalog queries and maintenance.
-3. **CLI** (`cli.py`) — thin command adapter around services plus terminal output/notification dispatch.
+1. **Sources registry** (`sources.py`) — one source of truth for scraper factory, label, emoji, dashboard colors, CI eligibility and Playwright requirement.
+2. **Scrapers** (`scrapers/{ous,netshoes,centauro,baw,umbro,approve}.py`) — each implements `Scraper` protocol: `source` string + `fetch_all() -> list[Product]`. Must fully paginate all pages.
+3. **Storage** (`storage.py`) — SQLite with `products`, `price_history`, `runs`, and `source_runs`. `record_run()` upserts + appends observations, deduplicates SKUs, links `run_id`. `find_changes()` detects 4 categories: `new_promo`, `ended`, `weaker`, `price_up`.
+4. **Services + CLI** (`services.py`, `cli.py`) — `services.py` holds the monitor orchestration (file lock + run-tracking), catalog queries and maintenance, plus the high-load summary categorization; `cli.py` is the thin command adapter and notification dispatch.
 
 Additional modules: `filters.py` (gender/size filters), `gender.py` (vocabulary), `sizes.py` (size parsing), `notifier.py` (Telegram), `server.py` (FastAPI webhook), `models.py` (Product dataclass), `html_generator.py` (HTML reports).
 
@@ -33,7 +34,8 @@ Additional modules: `filters.py` (gender/size filters), `gender.py` (vocabulary)
 | `netshoes_baw` | clube.netshoes.com.br | BaW Clothing | ~50 | Same as netshoes, filtered by marca |
 | `netshoes_adidas` | clube.netshoes.com.br | Adidas | ~6900 | 164 pages, ~4min scraping, no Adidas Originals |
 | `netshoes_adidas_originals` | clube.netshoes.com.br | Adidas Originals | ~92 | 4 pages, marca separada (marca=adidas-originals) |
-| `approve` | approve.com.br | Approve | varies | Tiendanube HTML listing parser |
+| `umbro` | umbro.com.br/outlet | Umbro | ~889 | VTEX coleção 921 |
+| `approve` | justapprove.com.br/sale | Approve | varies | Tiendanube HTML listing parser (não roda no CI) |
 
 ## Commands
 
@@ -51,6 +53,9 @@ PYTHONPATH=src python -m ous_monitor.cli report --days 7
 
 # Current sale snapshot
 PYTHONPATH=src python -m ous_monitor.cli list --limit 50
+
+# Operational source status
+PYTHONPATH=src python -m ous_monitor.cli status
 
 # Dry-run filter cleanup
 PYTHONPATH=src python -m ous_monitor.cli purge
@@ -105,9 +110,10 @@ From `.env` (auto-loaded by CLI):
 - `TELEGRAM_CHAT_ID` — Chat ID for notifications
 - `TELEGRAM_WEBHOOK_SECRET` — validated against Telegram webhook secret header
 - `TELEGRAM_ALLOWED_CHAT_IDS` — comma-separated allowlist for bot actions
-- `ADMIN_TOKEN` — required by `/setup-webhook`
+- `WEBHOOK_ADMIN_TOKEN` — protects `/setup-webhook` and `/status` (legacy alias `ADMIN_TOKEN` also accepted)
 - `CENTAURO_PROXY` (optional) — Proxy for Centauro scraper (`socks5://`, `http://`, `https://`)
-- `GEMINI_API_KEY` (optional) — For internal/future AI chat features in Telegram bot
+- `GEMINI_API_KEY` (optional) — For AI chat features in Telegram bot (AGY)
+- `SUMMARY_THRESHOLD` / `SUMMARY_PER_GROUP` (optional) — high-load summary tuning (see `notifier.build_summary`)
 
 ## Deployment Details
 

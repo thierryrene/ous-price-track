@@ -18,6 +18,7 @@ from typing import Iterable, List, Optional
 import httpx
 
 from .sizes import format_sizes_compact
+from .sources import SOURCES, source_emojis, source_labels
 
 log = logging.getLogger(__name__)
 
@@ -95,27 +96,10 @@ def format_brl(value) -> str:
     return _fmt_brl(value)
 
 
-# Emoji por loja — ajuda a varrer visualmente quando vêm várias fontes.
-SOURCE_EMOJI = {
-    "ous": "🟧",        # OUS oficial
-    "netshoes": "🟦",   # Netshoes Clube
-    "centauro": "🟥",   # Centauro
-    "baw": "⚫",
-    "netshoes_baw": "🟪",
-    "netshoes_adidas": "🟢",
-    "netshoes_adidas_originals": "🔵",
-    "approve": "🔴",
-}
-SOURCE_LABEL = {
-    "ous": "OUS oficial",
-    "netshoes": "Netshoes Clube",
-    "centauro": "Centauro",
-    "baw": "BaW Clothing",
-    "netshoes_baw": "Netshoes BaW",
-    "netshoes_adidas": "Netshoes Adidas",
-    "netshoes_adidas_originals": "Netshoes Adidas Originals",
-    "approve": "Approve",
-}
+# Emoji/label por loja — derivados de sources.py (fonte única; inclui umbro e
+# approve). Ajuda a varrer visualmente quando vêm várias fontes.
+SOURCE_EMOJI = {**source_emojis()}
+SOURCE_LABEL = {**source_labels()}
 
 
 def _intensity_emoji(pct: int) -> str:
@@ -455,11 +439,12 @@ MENU_KEYBOARD = {
         ],
         [
             {"text": "⚫ BaW", "callback_data": "run:baw"},
-            {"text": "🟢 Adidas", "callback_data": "run:netshoes_adidas"},
-            {"text": "🔵 Adidas Org.", "callback_data": "run:netshoes_adidas_originals"},
+            {"text": f"{SOURCES['umbro'].emoji} Umbro", "callback_data": "run:umbro"},
+            {"text": "🔴 Approve", "callback_data": "run:approve"},
         ],
         [
-            {"text": "🔴 Approve", "callback_data": "run:approve"},
+            {"text": "🟢 Adidas", "callback_data": "run:netshoes_adidas"},
+            {"text": "🔵 Adidas Org.", "callback_data": "run:netshoes_adidas_originals"},
         ],
         [
             {"text": "🔄 Rodar Todas", "callback_data": "run:all"},
@@ -805,7 +790,7 @@ def send_alert(changes: dict, *, bot_token=None, chat_id=None, dry_run=False,
         header_bits.append(f"📉 {counts['weaker']} piorou")
     if counts.get("price_up"):
         header_bits.append(f"📈 {counts['price_up']} subiu")
-    header = f"<b>🛒 ÖUS — {' · '.join(header_bits)}</b>"
+    header = f"<b>🛒 Price Monitor — {' · '.join(header_bits)}</b>"
 
     # Ordem visual: novidades primeiro, depois sinais negativos.
     lines: List[str] = []
@@ -847,7 +832,7 @@ def send_digest(changes: dict, *, period_label: str = "hoje",
         ("ended", "🔚", "Promoções terminaram"),
         ("price_up", "📈", "Preços subiram"),
     ]
-    header = f"<b>📊 Resumo OUS — {escape(period_label)}</b>"
+    header = f"<b>📊 Resumo Price Monitor — {escape(period_label)}</b>"
     lines: List[str] = []
     for cat, emoji, title in sections_order:
         rows = changes.get(cat) or []

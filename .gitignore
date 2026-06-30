@@ -9,6 +9,10 @@ venv/
 # prices.db é versionado intencionalmente para servir de estado entre
 # execuções do GitHub Actions (que é stateful zero entre jobs).
 data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+data/.monitor.lock
+data/.health_write
 data/snapshots/
 data/run.log
 logs/

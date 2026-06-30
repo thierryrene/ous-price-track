@@ -7,6 +7,9 @@ from html import escape
 from pathlib import Path
 from typing import Any, Dict, List
 
+from .sources import dashboard_source_config
+from .storage import latest_source_runs
+
 HTML_TEMPLATE = """<!doctype html>
 <html lang="pt-br">
 <head>
@@ -1363,14 +1366,7 @@ HTML_TEMPLATE = """<!doctype html>
       };
 
       // Mapeamento e Configuração de Lojas
-      const SOURCE_CONFIG = {
-        'ous': { label: 'ÖUS Oficial', color: '#ff7a00', bg: 'rgba(255, 122, 0, 0.15)', border: '#ff7a00' },
-        'baw': { label: 'BaW Oficial', color: '#ffffff', bg: 'rgba(255, 255, 255, 0.1)', border: '#555' },
-        'netshoes': { label: 'Netshoes ÖUS', color: '#70a1ff', bg: 'rgba(112, 161, 255, 0.15)', border: '#70a1ff' },
-        'netshoes_baw': { label: 'Netshoes BaW', color: '#5352ed', bg: 'rgba(83, 82, 237, 0.15)', border: '#5352ed' },
-        'netshoes_adidas': { label: 'Netshoes Adidas', color: '#2ed573', bg: 'rgba(46, 213, 115, 0.15)', border: '#2ed573' },
-        'centauro': { label: 'Centauro ÖUS', color: '#ff4757', bg: 'rgba(255, 71, 87, 0.15)', border: '#ff4757' }
-      };
+      const SOURCE_CONFIG = %%SOURCE_CONFIG_JSON%%;
 
       // Extração de fontes únicas e inicialização
       const rawSources = [...new Set(allProducts.map(p => p.source))];
@@ -2054,14 +2050,18 @@ def generate_dashboard_data(conn: Any) -> Dict[str, Any]:
             "available": bool(r["available"]),
             "sizes": sizes_list,
             "stock_qty": int(r["stock_qty"]) if r["stock_qty"] is not None else None,
+            "observed_at": r["observed_at"],
             "history": compressed
         })
+
+    source_status = [dict(row) for row in latest_source_runs(conn)]
 
     return {
         "products": products,
         "metadata": {
             "generated_at": datetime.now(timezone.utc).isoformat(),
-            "total_products": len(products)
+            "total_products": len(products),
+            "source_status": source_status
         }
     }
 
@@ -2072,7 +2072,12 @@ def write_dashboard(conn: Any, output_path: Path) -> None:
     data_json = json.dumps(data, ensure_ascii=False)
     
     # Injetar dados no template
-    html_content = HTML_TEMPLATE.replace("%%PRODUCTS_JSON%%", data_json)
+    source_config_json = json.dumps(dashboard_source_config(), ensure_ascii=False)
+    html_content = (
+        HTML_TEMPLATE
+        .replace("%%PRODUCTS_JSON%%", data_json)
+        .replace("%%SOURCE_CONFIG_JSON%%", source_config_json)
+    )
     
     # Criar diretórios pais se não existirem
     output_path.parent.mkdir(parents=True, exist_ok=True)

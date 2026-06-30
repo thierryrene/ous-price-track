@@ -26,7 +26,7 @@ from .dotenv import load_dotenv
 from .models import Product
 from .notifier import TelegramConfigError, send_alert, send_digest
 from .services import CatalogService, MonitorService, SourceRegistry
-from .storage import connect, find_new_promotions
+from .storage import connect, find_new_promotions, latest_source_runs
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DB = Path(os.environ.get("DB_PATH", str(REPO_ROOT / "data" / "prices.db")))
@@ -280,6 +280,25 @@ def cmd_export_html(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_status(args: argparse.Namespace) -> int:
+    """Mostra a última execução registrada por fonte (tabela source_runs)."""
+    with connect(args.db) as conn:
+        rows = latest_source_runs(conn)
+    if not rows:
+        print("Nenhuma execução registrada ainda.")
+        return 0
+    print("=== Última execução por fonte ===")
+    for r in rows:
+        print(
+            f"  [{r['source']:26}] {r['status']:8} "
+            f"brutos={r['raw_count']:5} mantidos={r['kept_count']:5} "
+            f"início={r['started_at']} fim={r['finished_at'] or '—'}"
+        )
+        if r["error"]:
+            print(f"    erro: {r['error']}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ous-monitor")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB, help="caminho do SQLite (default: data/prices.db)")
@@ -347,6 +366,9 @@ def main(argv: list[str] | None = None) -> int:
         help="caminho do arquivo HTML gerado (default: data/produtos.html)",
     )
     p_html.set_defaults(func=cmd_export_html)
+
+    p_status = sub.add_parser("status", help="mostra a última execução registrada por fonte")
+    p_status.set_defaults(func=cmd_status)
 
     args = parser.parse_args(argv)
     _setup_logging(args.verbose)

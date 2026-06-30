@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import fcntl
 import logging
 import os
 import sqlite3
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from html import escape
@@ -12,7 +15,10 @@ from typing import Iterable
 
 from .filters import should_keep, should_keep_product
 from .models import Product, RunCounters
-from .storage import connect, find_changes, record_run, snapshot_promotions
+from .storage import (
+    connect, finish_run, find_changes, record_run, record_source_run,
+    snapshot_promotions, start_run,
+)
 
 log = logging.getLogger(__name__)
 
@@ -94,35 +100,44 @@ class ProductFilters:
 
 
 class SourceRegistry:
-    """Lazy source registry to avoid importing browser-heavy scrapers at module import."""
+    """Registro de fontes. Fonte única de verdade em `sources.SOURCES` (inclui
+    umbro e approve); aqui só projetamos chave -> factory de scraper.
+
+    Importar `sources` é seguro pro CI: o único scraper pesado (Centauro/
+    Playwright) só importa o Playwright dentro do `fetch_all`, não no topo.
+    """
 
     @staticmethod
     def all() -> dict:
-        from .scrapers.approve import ApproveScraper
-        from .scrapers.baw import BawScraper
-        from .scrapers.centauro import CentauroScraper
-        from .scrapers.netshoes import (
-            NetshoesAdidasOriginalsScraper,
-            NetshoesAdidasScraper,
-            NetshoesBawScraper,
-            NetshoesScraper,
-        )
-        from .scrapers.ous import OusScraper
-
-        return {
-            "ous": OusScraper,
-            "netshoes": NetshoesScraper,
-            "centauro": CentauroScraper,
-            "baw": BawScraper,
-            "netshoes_baw": NetshoesBawScraper,
-            "netshoes_adidas": NetshoesAdidasScraper,
-            "netshoes_adidas_originals": NetshoesAdidasOriginalsScraper,
-            "approve": ApproveScraper,
-        }
+        from .sources import SOURCES
+        return {key: cfg.scraper_factory for key, cfg in SOURCES.items()}
 
     @classmethod
     def names(cls) -> list[str]:
         return list(cls.all())
+
+
+@contextmanager
+def monitor_file_lock(db_path: Path, timeout_s: float = 10.0):
+    """Lock de arquivo (fcntl) — exclusão mútua entre PROCESSOS (cron + bot)."""
+    lock_path = Path(db_path).parent / ".monitor.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "w") as lock_file:
+        deadline = time.monotonic() + timeout_s
+        while True:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        "Outro scraping já está em execução; tente novamente em instantes."
+                    )
+                time.sleep(0.25)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 class MonitorService:
@@ -130,17 +145,32 @@ class MonitorService:
         self.db_path = db_path
         self.source_registry = source_registry or SourceRegistry()
 
-    def scrape_and_persist(self, sources: list[str] | None = None) -> ScrapeRunResult:
+    def scrape_and_persist(self, sources: list[str] | None = None,
+                           *, mode: str = "snapshot") -> ScrapeRunResult:
+        with monitor_file_lock(self.db_path):
+            return self._scrape_and_persist_locked(sources, mode=mode)
+
+    def _scrape_and_persist_locked(self, sources: list[str] | None,
+                                   *, mode: str) -> ScrapeRunResult:
         scrapers = self.source_registry.all()
         selected = sources or list(scrapers)
         all_products: list[Product] = []
         failed: list[str] = []
 
+        with connect(self.db_path) as conn:
+            run_id = start_run(conn, mode=mode, sources=selected)
+
         for name in selected:
             scraper_cls = scrapers.get(name)
+            source_started = datetime.now(timezone.utc).isoformat(timespec="microseconds")
             if not scraper_cls:
                 log.error("Fonte desconhecida: %s", name)
                 failed.append(name)
+                with connect(self.db_path) as conn:
+                    record_source_run(
+                        conn, run_id=run_id, source=name, started_at=source_started,
+                        status="failed", error="Fonte desconhecida",
+                    )
                 continue
 
             try:
@@ -164,14 +194,33 @@ class MonitorService:
                 else:
                     log.info(">>> %s: %d produtos", name, len(kept))
                 all_products.extend(kept)
+                with connect(self.db_path) as conn:
+                    record_source_run(
+                        conn, run_id=run_id, source=name, started_at=source_started,
+                        status="success", raw_count=len(products), kept_count=len(kept),
+                        drop_gender=drop_g, drop_size=drop_s,
+                    )
             except Exception:  # noqa: BLE001
                 log.exception(">>> %s: falhou", name)
                 failed.append(name)
+                with connect(self.db_path) as conn:
+                    record_source_run(
+                        conn, run_id=run_id, source=name, started_at=source_started,
+                        status="failed", error="Falha durante scraping; consulte logs.",
+                    )
 
+        status = "success"
+        if failed and all_products:
+            status = "partial"
+        elif failed and not all_products:
+            status = "failed"
         counters = RunCounters()
-        if all_products:
-            with connect(self.db_path) as conn:
-                counters = RunCounters.from_mapping(record_run(conn, all_products))
+        with connect(self.db_path) as conn:
+            if all_products:
+                counters = RunCounters.from_mapping(
+                    record_run(conn, all_products, run_id=run_id))
+            finish_run(conn, run_id, status=status,
+                       error=", ".join(failed) if failed else None)
         return ScrapeRunResult(all_products, failed, counters)
 
     def run(self, *, sources: list[str] | None = None, mode: str = "alert",
@@ -180,7 +229,7 @@ class MonitorService:
         cutoff_dt = now - (timedelta(hours=digest_hours)
                            if mode == "digest" else timedelta(seconds=10))
         cutoff_iso = cutoff_dt.isoformat(timespec="seconds")
-        scrape = self.scrape_and_persist(sources)
+        scrape = self.scrape_and_persist(sources, mode=mode)
         changes = {k: [] for k in CHANGE_CATEGORIES}
         if scrape.products:
             with connect(self.db_path) as conn:
@@ -188,7 +237,7 @@ class MonitorService:
         return MonitorResult(scrape, changes, mode, cutoff_iso)
 
     def snapshot(self, *, sources: list[str] | None = None) -> SnapshotResult:
-        scrape = self.scrape_and_persist(sources)
+        scrape = self.scrape_and_persist(sources, mode="snapshot")
         changes = {k: [] for k in CHANGE_CATEGORIES}
         if scrape.products:
             with connect(self.db_path) as conn:

@@ -4,15 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Daily monitor de marcas de streetwear/calçado: **ÖUS**, **BaW Clothing** e
-**Adidas** (Adidas só no Clube Netshoes). Scrapes cada marca da loja própria
-(quando aplicável) + retailers marketplace, stores price history em SQLite,
-e reports newly-discounted products. Designed to run once per day from cron
-on a personal Linux machine.
+Daily monitor de marcas de streetwear/calçado: **ÖUS**, **BaW Clothing**,
+**Adidas** e **Umbro**. Scrapes cada marca da loja própria (quando aplicável)
++ retailers marketplace, stores price history em SQLite, reports changes, and
+serves Telegram/FastAPI + an HTML dashboard.
 
-Active sources (keys in `cli.SCRAPERS`):
+Active sources are defined once in `src/ous_monitor/sources.py` and consumed by
+CLI, Telegram labels/buttons, server validation and dashboard config:
 
 - `ous` — ous.com.br/garimpo (outlet oficial ÖUS, VTEX)
+- `umbro` — umbro.com.br/outlet (outlet oficial Umbro, VTEX coleção 921)
 - `netshoes` — clube.netshoes.com.br filtrado por marca ÖUS
 - `centauro` — centauro.com.br marca ÖUS (Playwright, frequentemente bloqueado)
 - `baw` — bawclothing.com.br (catálogo completo BaW, plataforma Wake/FBits)
@@ -57,7 +58,7 @@ print(len(ps), 'products,', sum(1 for p in ps if p.has_discount), 'on sale')
 
 ## Architecture
 
-Three layers, all under `src/ous_monitor/`:
+Main layers, all under `src/ous_monitor/`:
 
 1. **Scrapers** (`scrapers/{ous,netshoes,centauro,baw}.py`) — each implements
    the `Scraper` protocol from `scrapers/base.py`: a `source` string and a
@@ -65,9 +66,9 @@ Three layers, all under `src/ous_monitor/`:
    own pagination and **must walk all pages** (not just the first viewport's
    worth — see "Pagination contract" below).
 
-2. **Storage** (`storage.py`) — SQLite with two tables: `products` (one row per
-   SKU per source) and `price_history` (one row per (source, sku, observed_at)).
-   `record_run()` upserts product rows, appends a price observation, and
+2. **Storage** (`storage.py`) — SQLite with `products`, `price_history`,
+   `runs`, and `source_runs`. `record_run()` upserts product rows, appends a
+   price observation linked to `run_id`, deduplicates repeated SKUs, and
    returns counters. `find_changes()` uses `LAG` window functions to detect 4
    mutually-exclusive categories of change since a cutoff timestamp:
    `new_promo` (started/deepened a discount), `ended` (back to list price),
@@ -76,7 +77,7 @@ Three layers, all under `src/ous_monitor/`:
    `PRICE_UP_RATIO`). Priority: new_promo > ended > weaker > price_up. The
    thin wrapper `find_new_promotions()` is kept for backwards compat.
 
-3. **CLI** (`cli.py`) — orchestrates: runs each requested scraper in isolation
+3. **CLI** (`cli.py`) — orchestrates: takes a file lock, runs each requested scraper in isolation
    (one source crashing does not stop the others), passes products to storage,
    queries `find_changes()`, and dispatches to the notifier in one of two
    modes (flag `--mode`):
@@ -89,6 +90,11 @@ Three layers, all under `src/ous_monitor/`:
 
 The `Product` dataclass in `models.py` is the contract between scrapers and
 storage. Add a field there if a new piece of data needs to flow through.
+
+`server.py` exposes `/health`, `/health/ready`, `/status` and `/webhook`.
+Production webhook setup requires `WEBHOOK_ADMIN_TOKEN`; Telegram webhook
+requests can be protected with `TELEGRAM_WEBHOOK_SECRET`, and chat access is
+restricted by `TELEGRAM_ALLOWED_CHAT_IDS` or `TELEGRAM_CHAT_ID`.
 
 ## Pagination contract
 
@@ -132,6 +138,7 @@ Aplica os mesmos filtros sobre o DB existente, usando a última observação com
 ```bash
 PYTHONPATH=src python -m ous_monitor.cli purge          # dry-run
 PYTHONPATH=src python -m ous_monitor.cli purge --apply  # executa
+PYTHONPATH=src python -m ous_monitor.cli status         # saúde das fontes
 ```
 
 ## Notifier
