@@ -11,10 +11,12 @@ class SourceRegistryTests(unittest.TestCase):
         self.assertIn("umbro", ci_source_keys())
         self.assertEqual(dashboard_source_config()["umbro"]["label"], "Umbro Oficial")
 
-    def test_centauro_is_excluded_from_ci(self):
-        self.assertIn("centauro", SOURCES)
-        self.assertNotIn("centauro", ci_source_keys())
-        self.assertTrue(SOURCES["centauro"].needs_playwright)
+    def test_centauro_is_removed(self):
+        self.assertNotIn("centauro", SOURCES)
+
+    def test_approve_is_excluded_from_ci(self):
+        self.assertIn("approve", SOURCES)
+        self.assertNotIn("approve", ci_source_keys())
 
 
 if __name__ == "__main__":

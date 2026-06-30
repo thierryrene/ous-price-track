@@ -5,8 +5,7 @@ Combina dois critérios:
      infantil/juvenil, maternidade, categorias femininas.
   2. Tamanho de tênis: itens cujo nome contém `\btênis\b` precisam ter 42 ou 43
      entre os `sizes` disponíveis. Tênis com `sizes` vazio passa direto
-     (Centauro/BaW oficial não expõem tamanhos na listagem — melhor mostrar
-     do que perder).
+     (BaW oficial não expõe tamanhos na listagem — melhor mostrar do que perder).
 
 A mesma lógica é usada em dois pontos:
   * ingestão (`cli._scrape_and_persist`) — filtra antes de `record_run`

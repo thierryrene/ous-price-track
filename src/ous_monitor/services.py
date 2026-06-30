@@ -103,8 +103,8 @@ class SourceRegistry:
     """Registro de fontes. Fonte única de verdade em `sources.SOURCES` (inclui
     umbro e approve); aqui só projetamos chave -> factory de scraper.
 
-    Importar `sources` é seguro pro CI: o único scraper pesado (Centauro/
-    Playwright) só importa o Playwright dentro do `fetch_all`, não no topo.
+    Todos os scrapers são httpx/selectolax (sem Playwright), então importar
+    `sources` é leve e seguro pro CI.
     """
 
     @staticmethod

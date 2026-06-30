@@ -39,8 +39,7 @@ HTML_TEMPLATE = """<!doctype html>
       --accent-ous: linear-gradient(135deg, #ff7a00, #ff4500);
       --accent-baw: linear-gradient(135deg, #333333, #111111);
       --accent-netshoes: linear-gradient(135deg, #0066cc, #0044aa);
-      --accent-centauro: linear-gradient(135deg, #e50914, #990000);
-      
+
       --primary: hsl(210, 100%, 55%);
       --primary-glow: rgba(0, 102, 204, 0.35);
       

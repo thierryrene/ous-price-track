@@ -25,7 +25,7 @@ Migramos a infraestrutura para rodar em modo servidor na VPS da Digital Ocean ge
    * `query_prices_db`: Executa queries SQL no banco SQLite local para extrair histórico de preços e insights.
    * `run_store_scraper`: Dispara o scraper de uma loja e atualiza a base de dados.
 3. **Notificador (`src/ous_monitor/notifier.py`):** Anexa o teclado de menu do bot no final de cada resposta gerada pelo monitor ou pelo agente da IA, permitindo continuidade na interação.
-4. **Dockerfile e Docker Compose:** Conteineriza o app usando a imagem do Playwright oficial, incluindo o SDK do Antigravity nas dependências.
+4. **Dockerfile e Docker Compose:** Conteineriza o app sobre a base Ubuntu Noble (`mcr.microsoft.com/playwright/python:*-noble`), escolhida pelo glibc 2.39 que o SDK do Antigravity exige.
 
 ---
 
@@ -49,10 +49,9 @@ Na aba **Environment Variables** do Coolify, adicione:
 * `TELEGRAM_ALLOWED_CHAT_IDS`: lista de chats autorizados, separada por vírgula.
 * `WEBHOOK_ADMIN_TOKEN`: Token administrativo para `/setup-webhook` e `/status` (nome legado `ADMIN_TOKEN` também aceito).
 * `GEMINI_API_KEY` *(Opcional)*: chave do Gemini API, necessária apenas se a IA AGY for reativada.
-* `CENTAURO_PROXY` *(Opcional)*: URL do proxy se for usar para contornar o bloqueio do Akamai na Centauro.
 
 ### Passo 4: Build e Deploy
-1. Clique em **Deploy** no topo direito do painel e aguarde a finalização da build do Playwright.
+1. Clique em **Deploy** no topo direito do painel e aguarde a finalização da build.
 2. Garanta que o status ficou em verde (**Running**).
 
 ### Passo 5: Ativação do Webhook do Telegram

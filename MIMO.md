@@ -5,7 +5,7 @@
 **ous-price-monitor** — Daily price monitor for streetwear/shoe brands: **OÜS**, **BaW Clothing**, **Adidas**, **Umbro**, and **Approve** (Adidas only via Netshoes Club). GitHub Actions runs the scheduled monitor; Coolify/FastAPI serves Telegram on-demand actions.
 
 - **Language:** Python 3.10+ (uses modern type syntax and `from __future__ import annotations`)
-- **Dependencies:** httpx, selectolax, curl_cffi, FastAPI, uvicorn, google-antigravity, Playwright
+- **Dependencies:** httpx, selectolax, curl_cffi, FastAPI, uvicorn, google-antigravity
 - **Database:** SQLite at `data/prices.db` with product snapshots plus `runs`/`source_runs`
 - **Notifications:** Telegram bot (alert/digest modes)
 - **Deploy:** Docker Compose on VPS Digital Ocean, reverse proxy via Traefik (Coolify)
@@ -16,8 +16,8 @@
 
 Layers under `src/ous_monitor/`:
 
-1. **Sources registry** (`sources.py`) — one source of truth for scraper factory, label, emoji, dashboard colors, CI eligibility and Playwright requirement.
-2. **Scrapers** (`scrapers/{ous,netshoes,centauro,baw,umbro,approve}.py`) — each implements `Scraper` protocol: `source` string + `fetch_all() -> list[Product]`. Must fully paginate all pages.
+1. **Sources registry** (`sources.py`) — one source of truth for scraper factory, label, emoji, dashboard colors and CI eligibility.
+2. **Scrapers** (`scrapers/{ous,netshoes,baw,umbro,approve}.py`) — each implements `Scraper` protocol: `source` string + `fetch_all() -> list[Product]`. Must fully paginate all pages.
 3. **Storage** (`storage.py`) — SQLite with `products`, `price_history`, `runs`, and `source_runs`. `record_run()` upserts + appends observations, deduplicates SKUs, links `run_id`. `find_changes()` detects 4 categories: `new_promo`, `ended`, `weaker`, `price_up`.
 4. **Services + CLI** (`services.py`, `cli.py`) — `services.py` holds the monitor orchestration (file lock + run-tracking), catalog queries and maintenance, plus the high-load summary categorization; `cli.py` is the thin command adapter and notification dispatch.
 
@@ -29,7 +29,6 @@ Additional modules: `filters.py` (gender/size filters), `gender.py` (vocabulary)
 |---|---|---|---|---|
 | `ous` | ous.com.br/garimpo | ÖUS | ~144 | VTEX API, ListPrice>Price = promo |
 | `netshoes` | clube.netshoes.com.br | ÖUS | ~204 | HTML parse `__INITIAL_STATE__`, prices in cents |
-| `centauro` | centauro.com.br | ÖUS | varies | Playwright, Akamai BMP often blocks |
 | `baw` | bawclothing.com.br | BaW Clothing | ~587 | Wake/FBits, JSON-LD + dataLayer combo |
 | `netshoes_baw` | clube.netshoes.com.br | BaW Clothing | ~50 | Same as netshoes, filtered by marca |
 | `netshoes_adidas` | clube.netshoes.com.br | Adidas | ~6900 | 164 pages, ~4min scraping, no Adidas Originals |
@@ -84,14 +83,13 @@ Every scraper MUST walk all pages. Each logs server-declared total on first page
 
 - **OUS**: VTEX `resources: X-Y/TOTAL` header, loop `_from`/`_to` by 50. ~3 pages.
 - **Netshoes**: `__INITIAL_STATE__.SearchPage.totalPages`, loop `?page=N`. ~5 (ÖUS), ~2 (BaW), ~164 (Adidas).
-- **Centauro**: `__NEXT_DATA__` pagination, loop `?page=N`. ~6 pages.
 - **BaW**: JSON-LD `ItemList.numberOfItems`, loop `?pagina=N&tamanho=24` (BOTH required, `?pagina` alone is silently ignored). ~25 pages.
 
 ## Site-Specific Gotchas
 
 - **OUS**: `Discount` field always null — derive promo from `ListPrice > Price`. Color variants = separate `productId`s. Size variants share pricing via `items[]`.
 - **Netshoes**: Prices in **cents** (divide by 100). Brand `ÖUS` with umlaut (not `OUS`). Pagination `?page=N` (`?p=N` ignored).
-- **Centauro**: Akamai BMP. Plain HTTP gets 403. Playwright headless works for fresh IPs but blocks after a few requests. Raises `CentauroBlocked`, scraper swallows and returns `[]`.
+- **Netshoes**: rate-limits (429) shared IPs. Scraper retries with exponential backoff (honors `Retry-After`) before giving up — see `_get_with_retry`.
 - **BaW**: Wake/FBits platform (NOT VTEX). `discount` in dataLayer is **absolute BRL value saved**, NOT percentage — `list_price = price + discount`. Do NOT request `br` in Accept-Encoding. Pagination needs `?pagina=N&tamanho=24` together.
 
 ## Filters
@@ -111,7 +109,6 @@ From `.env` (auto-loaded by CLI):
 - `TELEGRAM_WEBHOOK_SECRET` — validated against Telegram webhook secret header
 - `TELEGRAM_ALLOWED_CHAT_IDS` — comma-separated allowlist for bot actions
 - `WEBHOOK_ADMIN_TOKEN` — protects `/setup-webhook` and `/status` (legacy alias `ADMIN_TOKEN` also accepted)
-- `CENTAURO_PROXY` (optional) — Proxy for Centauro scraper (`socks5://`, `http://`, `https://`)
 - `GEMINI_API_KEY` (optional) — For AI chat features in Telegram bot (AGY)
 - `SUMMARY_THRESHOLD` / `SUMMARY_PER_GROUP` (optional) — high-load summary tuning (see `notifier.build_summary`)
 
@@ -126,7 +123,7 @@ From `.env` (auto-loaded by CLI):
 
 FastAPI server (`server.py`) with inline keyboard menus:
 - **Main Menu**: Consult DB, Run Scrapers, General Snapshot, Scan Status
-- **DB Menu**: ÖUS, Netshoes (groups all 3), Centauro — SQLite queries returning active promos
+- **DB Menu**: ÖUS, Netshoes, BaW, Adidas, Umbro — SQLite queries returning active promos
 - **Scrapers Menu**: Individual or bulk (`Rodar Todas`) scraper triggers
 
 Text messages (non-command) return menu prompt — AI chat is currently disabled.

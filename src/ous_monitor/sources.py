@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List
 
 from .scrapers.baw import BawScraper
-from .scrapers.centauro import CentauroScraper
 from .scrapers.netshoes import (
     NetshoesAdidasOriginalsScraper,
     NetshoesAdidasScraper,
@@ -26,7 +25,6 @@ class SourceConfig:
     bg: str
     border: str
     run_in_ci: bool = True
-    needs_playwright: bool = False
 
 
 SOURCES: Dict[str, SourceConfig] = {
@@ -47,17 +45,6 @@ SOURCES: Dict[str, SourceConfig] = {
         color="#70a1ff",
         bg="rgba(112, 161, 255, 0.15)",
         border="#70a1ff",
-    ),
-    "centauro": SourceConfig(
-        key="centauro",
-        label="Centauro OUS",
-        emoji="🟥",
-        scraper_factory=CentauroScraper,
-        color="#ff4757",
-        bg="rgba(255, 71, 87, 0.15)",
-        border="#ff4757",
-        run_in_ci=False,
-        needs_playwright=True,
     ),
     "baw": SourceConfig(
         key="baw",

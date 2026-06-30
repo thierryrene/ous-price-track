@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-Source = str  # "ous" | "centauro" | "netshoes"
+Source = str  # "ous" | "netshoes" | "baw" | "umbro" | ...
 
 
 @dataclass(frozen=True)
@@ -21,7 +21,7 @@ class Product:
     # ("39", "39.5", "P", "M", "ÚNICO"). Pode estar vazia se a fonte não expõe.
     sizes: List[str] = field(default_factory=list)
     # Quantidade total em estoque somando variações disponíveis. None se
-    # a fonte não reporta (Netshoes/Centauro listagem).
+    # a fonte não reporta (Netshoes listagem).
     stock_qty: Optional[int] = None
 
     @property

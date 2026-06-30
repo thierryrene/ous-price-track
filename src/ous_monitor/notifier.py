@@ -435,7 +435,6 @@ MENU_KEYBOARD = {
         [
             {"text": "🟧 OUS", "callback_data": "run:ous"},
             {"text": "🟦 Netshoes", "callback_data": "run:netshoes"},
-            {"text": "🟥 Centauro", "callback_data": "run:centauro"},
         ],
         [
             {"text": "⚫ BaW", "callback_data": "run:baw"},
@@ -595,7 +594,6 @@ CATEGORY_KEYBOARD = {
 SOURCE_LABEL_SHORT = {
     "ous": "🟧 OUS",
     "netshoes": "🟦 Netshoes",
-    "centauro": "🟥 Centauro",
     "baw": "⚫ BaW",
     "netshoes_baw": "🟪 Netshoes BaW",
     "netshoes_adidas": "🟢 Adidas",
