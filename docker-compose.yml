@@ -10,6 +10,8 @@ services:
       - ./data:/app/data
     env_file:
       - .env
+    environment:
+      - DB_PATH=/app/data/prices.db
     networks:
       - coolify
     labels:

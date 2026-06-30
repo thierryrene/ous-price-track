@@ -17,41 +17,22 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .dotenv import load_dotenv
-from .filters import should_keep_product
 from .models import Product
 from .notifier import TelegramConfigError, send_alert, send_digest
-from .scrapers.baw import BawScraper
-from .scrapers.centauro import CentauroScraper
-from .scrapers.netshoes import (
-    NetshoesAdidasOriginalsScraper,
-    NetshoesAdidasScraper,
-    NetshoesBawScraper,
-    NetshoesScraper,
-)
-from .scrapers.ous import OusScraper
-from .storage import (
-    connect, find_changes, find_new_promotions, record_run,
-    snapshot_promotions,
-)
+from .services import CatalogService, MonitorService, SourceRegistry
+from .storage import connect, find_new_promotions
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DB = REPO_ROOT / "data" / "prices.db"
-DEFAULT_ENV = REPO_ROOT / ".env"
+DEFAULT_DB = Path(os.environ.get("DB_PATH", str(REPO_ROOT / "data" / "prices.db")))
+DEFAULT_ENV = Path(os.environ.get("ENV_PATH", str(REPO_ROOT / ".env")))
 
-SCRAPERS = {
-    "ous": OusScraper,
-    "netshoes": NetshoesScraper,
-    "centauro": CentauroScraper,
-    "baw": BawScraper,
-    "netshoes_baw": NetshoesBawScraper,
-    "netshoes_adidas": NetshoesAdidasScraper,
-    "netshoes_adidas_originals": NetshoesAdidasOriginalsScraper,
-}
+SCRAPERS = SourceRegistry.all()
 
 log = logging.getLogger("ous_monitor")
 
@@ -81,64 +62,24 @@ def _print_promo_row(p: Product) -> None:
 def _scrape_and_persist(args: argparse.Namespace) -> tuple[list[Product], list[str], dict]:
     """Roda os scrapers solicitados, persiste no DB, devolve (produtos, falhas, counters).
     Compartilhado por cmd_run e cmd_snapshot."""
-    sources = args.sources or list(SCRAPERS)
-    all_products: list[Product] = []
-    failed: list[str] = []
-    for name in sources:
-        scraper_cls = SCRAPERS.get(name)
-        if not scraper_cls:
-            log.error("Fonte desconhecida: %s", name)
-            failed.append(name)
-            continue
-        try:
-            log.info(">>> %s: iniciando scraping", name)
-            products = scraper_cls().fetch_all()
-            kept: list[Product] = []
-            drop_g = drop_s = 0
-            for p in products:
-                ok, reason = should_keep_product(p)
-                if ok:
-                    kept.append(p)
-                elif reason == "gender":
-                    drop_g += 1
-                else:
-                    drop_s += 1
-            if drop_g or drop_s:
-                log.info(">>> %s: %d produtos (%d brutos; -%d gênero/idade, "
-                         "-%d tamanho 42/43)",
-                         name, len(kept), len(products), drop_g, drop_s)
-            else:
-                log.info(">>> %s: %d produtos", name, len(kept))
-            all_products.extend(kept)
-        except Exception:  # noqa: BLE001
-            log.exception(">>> %s: falhou", name)
-            failed.append(name)
-
-    counters = {}
-    if all_products:
-        with connect(args.db) as conn:
-            counters = record_run(conn, all_products)
-    return all_products, failed, counters
+    result = MonitorService(args.db).scrape_and_persist(args.sources)
+    return result.products, result.failed, result.counters.as_dict()
 
 
 def cmd_run(args: argparse.Namespace) -> int:
     now = datetime.now(timezone.utc)
-    # Janela de detecção:
-    # - alert: últimos 10s (= o que foi inserido nesta execução)
-    # - digest: últimas 24h (consolida o dia inteiro de mudanças)
-    if args.mode == "digest":
-        cutoff_dt = now - timedelta(hours=args.digest_hours)
-    else:
-        cutoff_dt = now - timedelta(seconds=10)
-    cutoff_iso = cutoff_dt.isoformat(timespec="seconds")
-
-    all_products, failed, counters = _scrape_and_persist(args)
+    result = MonitorService(args.db).run(
+        sources=args.sources,
+        mode=args.mode,
+        digest_hours=args.digest_hours,
+    )
+    all_products = result.scrape.products
+    failed = result.scrape.failed
+    counters = result.scrape.counters.as_dict()
+    changes = result.changes
     if not all_products:
         log.warning("Nenhum produto coletado. Encerrando.")
         return 1 if failed else 0
-
-    with connect(args.db) as conn:
-        changes = find_changes(conn, cutoff_iso)
 
     log.info(
         "Resumo: %d novos produtos, %d atualizados, %d quedas, %d novas promo, "
@@ -175,7 +116,8 @@ def cmd_run(args: argparse.Namespace) -> int:
                 send_digest(changes, period_label=period_label,
                             dry_run=args.dry_run_telegram)
             else:
-                send_alert(changes, dry_run=args.dry_run_telegram)
+                send_alert(changes, dry_run=args.dry_run_telegram,
+                           period_label=now.strftime("%d/%m %Hh UTC"))
         except TelegramConfigError as e:
             log.warning("Telegram não configurado: %s", e)
         except Exception:
@@ -198,13 +140,14 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
     O filtro de tamanhos (42/43 pra tênis) continua valendo.
     """
     now = datetime.now(timezone.utc)
-    all_products, failed, counters = _scrape_and_persist(args)
+    result = MonitorService(args.db).snapshot(sources=args.sources)
+    all_products = result.scrape.products
+    failed = result.scrape.failed
+    counters = result.scrape.counters.as_dict()
+    changes = result.changes
     if not all_products:
         log.warning("Nenhum produto coletado. Encerrando.")
         return 1 if failed else 0
-
-    with connect(args.db) as conn:
-        changes = snapshot_promotions(conn)
 
     total = len(changes["new_promo"])
     log.info(
@@ -274,104 +217,51 @@ def cmd_purge(args: argparse.Namespace) -> int:
     Default é dry-run; passar --apply faz a deleção em transação única.
     """
     from collections import Counter
-    from .filters import should_keep
 
-    with connect(args.db) as conn:
-        rows = list(conn.execute(
-            """
-            SELECT p.source, p.sku, p.name, h.sizes
-              FROM products p
-              JOIN price_history h
-                ON h.source = p.source AND h.sku = p.sku
-               AND h.observed_at = (
-                   SELECT MAX(observed_at) FROM price_history
-                    WHERE source = p.source AND sku = p.sku
-               )
-            """
-        ))
-        to_drop: list[tuple[str, str, str, str]] = []  # source, sku, name, reason
-        for r in rows:
-            sizes = (r["sizes"] or "").split(",") if r["sizes"] else ()
-            keep, reason = should_keep(r["name"] or "", sizes)
-            if not keep:
-                to_drop.append((r["source"], r["sku"], r["name"] or "", reason))
+    service = CatalogService(args.db)
+    result = service.purge_apply() if args.apply else service.purge_candidates()
+    to_drop = result.candidates
 
-        if not to_drop:
-            print("DB já está limpo — nenhum produto a remover.")
-            return 0
+    if not to_drop:
+        print("DB já está limpo — nenhum produto a remover.")
+        return 0
 
-        by_src = Counter(d[0] for d in to_drop)
-        by_reason = Counter(d[3] for d in to_drop)
+    by_src = Counter(d.source for d in to_drop)
+    by_reason = Counter(d.reason for d in to_drop)
 
-        mode = "APLICANDO" if args.apply else "Dry-run (use --apply pra executar)"
-        print(f"=== Purge — {mode} ===")
-        print(f"Critérios: gênero/idade + tênis 42/43 (filtros.py)\n")
-        print("Por source:")
-        for s in sorted(by_src):
-            g = sum(1 for d in to_drop if d[0]==s and d[3]=="gender")
-            z = sum(1 for d in to_drop if d[0]==s and d[3]=="size")
-            print(f"  {s:18} {by_src[s]:4} a remover  ({g} gênero, {z} tamanho)")
-        print(f"\nTotal: {len(to_drop)} produtos "
-              f"({by_reason.get('gender',0)} por gênero/idade, "
-              f"{by_reason.get('size',0)} por tamanho)")
+    mode = "APLICANDO" if args.apply else "Dry-run (use --apply pra executar)"
+    print(f"=== Purge — {mode} ===")
+    print("Critérios: gênero/idade + tênis 42/43 (filtros.py)\n")
+    print("Por source:")
+    for s in sorted(by_src):
+        g = sum(1 for d in to_drop if d.source == s and d.reason == "gender")
+        z = sum(1 for d in to_drop if d.source == s and d.reason == "size")
+        print(f"  {s:18} {by_src[s]:4} a remover  ({g} gênero, {z} tamanho)")
+    print(f"\nTotal: {len(to_drop)} produtos "
+          f"({by_reason.get('gender', 0)} por gênero/idade, "
+          f"{by_reason.get('size', 0)} por tamanho)")
 
-        print(f"\nAmostra ({min(10, len(to_drop))} primeiros):")
-        for src, sku, name, reason in to_drop[:10]:
-            print(f"  [{src:14}] ({reason:6}) {name[:70]}")
+    print(f"\nAmostra ({min(10, len(to_drop))} primeiros):")
+    for c in to_drop[:10]:
+        print(f"  [{c.source:14}] ({c.reason:6}) {c.name[:70]}")
 
-        # Contar observações em cascata
-        obs = conn.execute(
-            "SELECT COUNT(*) FROM price_history h WHERE EXISTS ("
-            "  SELECT 1 FROM products p WHERE p.source=h.source AND p.sku=h.sku)"
-        ).fetchone()[0]
-        target_obs = sum(
-            conn.execute("SELECT COUNT(*) FROM price_history WHERE source=? AND sku=?",
-                         (s, k)).fetchone()[0]
-            for s, k, _, _ in to_drop
-        )
-        print(f"\nObservações em price_history a remover em cascata: {target_obs} "
-              f"(de {obs} total).")
+    print(f"\nObservações em price_history a remover em cascata: {result.observations}.")
 
-        if not args.apply:
-            print("\nDry-run: nada foi modificado. Rode novamente com --apply pra deletar.")
-            return 0
+    if not args.apply:
+        print("\nDry-run: nada foi modificado. Rode novamente com --apply pra deletar.")
+        return 0
 
-        # Apply: transação única
-        cur = conn.cursor()
-        cur.execute("BEGIN")
-        try:
-            for src, sku, _, _ in to_drop:
-                cur.execute("DELETE FROM price_history WHERE source=? AND sku=?", (src, sku))
-                cur.execute("DELETE FROM products WHERE source=? AND sku=?", (src, sku))
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        print(f"\n✔ Removidos {len(to_drop)} produtos e {target_obs} observações.")
+    print(f"\n✔ Removidos {len(to_drop)} produtos e {result.observations} observações.")
     return 0
 
 
 def cmd_list(args: argparse.Namespace) -> int:
-    with connect(args.db) as conn:
-        rows = list(conn.execute(
-            """
-            SELECT p.source, p.sku, p.name, p.url, h.list_price, h.price
-              FROM products p
-              JOIN price_history h
-                ON h.source = p.source AND h.sku = p.sku
-                AND h.observed_at = (
-                    SELECT MAX(observed_at) FROM price_history
-                     WHERE source = p.source AND sku = p.sku
-                )
-             WHERE h.list_price IS NOT NULL AND h.list_price > h.price
-             ORDER BY (1.0 - h.price * 1.0 / h.list_price) DESC
-            """
-        ))
+    rows = CatalogService(args.db).latest_discounted(limit=args.limit)
     if not rows:
         print("Nenhum produto em promoção no último snapshot.")
         return 0
     print(f"=== {len(rows)} produtos em promoção (último snapshot) ===")
-    for r in rows[: args.limit]:
+    for r in rows:
         pct = round((1 - r["price"] / r["list_price"]) * 100) if r["list_price"] and r["list_price"] > 0 else 0
         print(
             f"  [{r['source']:8}] {r['name'][:55]:55} "

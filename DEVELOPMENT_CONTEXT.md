@@ -75,7 +75,7 @@ No diretório `/root/price-monitor-thierry`:
   ```
 * **Forçar Reconfiguração do Webhook:**
   ```bash
-  curl -s https://price-monitor.thierryrenematos.tec.br/setup-webhook?url=https://price-monitor.thierryrenematos.tec.br
+  curl -s "https://price-monitor.thierryrenematos.tec.br/setup-webhook?url=https://price-monitor.thierryrenematos.tec.br&admin_token=$ADMIN_TOKEN"
   ```
 
 ### Como Reativar a IA (Agy) se desejar futuramente:

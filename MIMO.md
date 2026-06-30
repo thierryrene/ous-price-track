@@ -2,9 +2,9 @@
 
 ## Project
 
-**ous-price-monitor** — Daily price monitor for streetwear/shoe brands: **OÜS**, **BaW Clothing**, and **Adidas** (Adidas only via Netshoes Club). Designed to run once per day from cron on a personal Linux machine.
+**ous-price-monitor** — Daily price monitor for streetwear/shoe brands: **OÜS**, **BaW Clothing**, and **Adidas** (Adidas only via Netshoes Club). GitHub Actions runs the scheduled monitor; Coolify/FastAPI serves Telegram on-demand actions.
 
-- **Language:** Python 3.8 (system Python, uses `from __future__ import annotations`)
+- **Language:** Python 3.10+ (uses modern type syntax and `from __future__ import annotations`)
 - **Dependencies:** httpx, selectolax, curl_cffi, FastAPI, uvicorn, google-antigravity, Playwright
 - **Database:** SQLite at `data/prices.db` (~12.3 MB)
 - **Notifications:** Telegram bot (alert/digest modes)
@@ -16,9 +16,9 @@
 
 Three layers under `src/ous_monitor/`:
 
-1. **Scrapers** (`scrapers/{ous,netshoes,centauro,baw}.py`) — each implements `Scraper` protocol: `source` string + `fetch_all() -> list[Product]`. Must fully paginate all pages.
-2. **Storage** (`storage.py`) — SQLite with `products` + `price_history` tables. `record_run()` upserts + appends observations. `find_changes()` detects 4 categories: `new_promo`, `ended`, `weaker`, `price_up`.
-3. **CLI** (`cli.py`) — orchestrates scraping, persistence, change detection, and notification dispatch.
+1. **Scrapers** (`scrapers/*.py`) — each implements `Scraper` protocol: `source` string + `fetch_all() -> list[Product]`. Must fully paginate all pages.
+2. **Storage/services** (`storage.py`, `services.py`) — SQLite persistence, typed run/change contracts, monitor orchestration, catalog queries and maintenance.
+3. **CLI** (`cli.py`) — thin command adapter around services plus terminal output/notification dispatch.
 
 Additional modules: `filters.py` (gender/size filters), `gender.py` (vocabulary), `sizes.py` (size parsing), `notifier.py` (Telegram), `server.py` (FastAPI webhook), `models.py` (Product dataclass), `html_generator.py` (HTML reports).
 
@@ -33,6 +33,7 @@ Additional modules: `filters.py` (gender/size filters), `gender.py` (vocabulary)
 | `netshoes_baw` | clube.netshoes.com.br | BaW Clothing | ~50 | Same as netshoes, filtered by marca |
 | `netshoes_adidas` | clube.netshoes.com.br | Adidas | ~6900 | 164 pages, ~4min scraping, no Adidas Originals |
 | `netshoes_adidas_originals` | clube.netshoes.com.br | Adidas Originals | ~92 | 4 pages, marca separada (marca=adidas-originals) |
+| `approve` | approve.com.br | Approve | varies | Tiendanube HTML listing parser |
 
 ## Commands
 
@@ -61,7 +62,7 @@ docker compose up -d --build
 docker logs -f ous-price-monitor
 
 # Force webhook setup
-curl -s https://price-monitor.thierryrenematos.tec.br/setup-webhook?url=https://price-monitor.thierryrenematos.tec.br
+curl -s "https://price-monitor.thierryrenematos.tec.br/setup-webhook?url=https://price-monitor.thierryrenematos.tec.br&admin_token=$ADMIN_TOKEN"
 ```
 
 ## CLI Modes
@@ -102,15 +103,18 @@ Purge subcommand applies same filters to existing DB (dry-run by default, `--app
 From `.env` (auto-loaded by CLI):
 - `TELEGRAM_BOT_TOKEN` — Telegram bot token
 - `TELEGRAM_CHAT_ID` — Chat ID for notifications
+- `TELEGRAM_WEBHOOK_SECRET` — validated against Telegram webhook secret header
+- `TELEGRAM_ALLOWED_CHAT_IDS` — comma-separated allowlist for bot actions
+- `ADMIN_TOKEN` — required by `/setup-webhook`
 - `CENTAURO_PROXY` (optional) — Proxy for Centauro scraper (`socks5://`, `http://`, `https://`)
-- `GEMINI_API_KEY` — For AI chat features in Telegram bot
+- `GEMINI_API_KEY` (optional) — For internal/future AI chat features in Telegram bot
 
 ## Deployment Details
 
 - **Container base:** Ubuntu 24.04 (Noble) for glibc 2.39 compatibility
 - **DB persistence:** bind-mount `./data:/app/data` (not Docker volume)
 - **Port:** 8000 exposed internally, no host port binding (Traefik handles routing)
-- **Webhook:** configured at `https://price-monitor.thierryrenematos.tec.br/setup-webhook`
+- **Webhook:** configured at `/setup-webhook?url=...&admin_token=...`
 
 ## Bot Interface (Telegram)
 
@@ -121,9 +125,14 @@ FastAPI server (`server.py`) with inline keyboard menus:
 
 Text messages (non-command) return menu prompt — AI chat is currently disabled.
 
-## No Test Suite
+## Tests
 
-There are no automated tests. Validate scraper changes with:
+Basic regression tests exist under `tests/`. Run:
+```bash
+PYTHONPATH=src python -m unittest discover -s tests
+```
+
+Validate scraper changes with targeted runs, for example:
 ```bash
 PYTHONPATH=src python -c "
 from ous_monitor.scrapers.baw import BawScraper
@@ -134,7 +143,7 @@ print(len(ps), 'products,', sum(1 for p in ps if p.has_discount), 'on sale')
 
 ## Important Rules
 
-- Python 3.8 — no runtime `match`, no `dataclass(slots=True)`, no `isinstance(x, int | str)`
+- Python 3.10+.
 - Always `from __future__ import annotations`
 - Never add comments unless asked
 - Prefer `bat`/`rg`/`fd`/`sd`/`eza` over `cat`/`grep`/`find`/`sed`/`ls`

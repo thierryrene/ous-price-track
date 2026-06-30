@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-from .models import Product
+from .models import ChangeSet, Product, RunCounters, RunResult
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS products (
@@ -82,10 +82,13 @@ def latest_observation(conn: sqlite3.Connection, source: str, sku: str) -> sqlit
     ).fetchone()
 
 
-def record_run(conn: sqlite3.Connection, products: Iterable[Product]) -> dict[str, int]:
-    """Persist a run. Returns counters: {'new', 'updated', 'price_drop', 'new_promo'}."""
+def record_run_result(conn: sqlite3.Connection, products: Iterable[Product]) -> RunResult:
+    """Persist a run and return the typed domain result."""
     now = _now()
-    counters = {"new": 0, "updated": 0, "price_drop": 0, "new_promo": 0}
+    new = 0
+    updated = 0
+    price_drop = 0
+    new_promo = 0
 
     products_list = list(products)
 
@@ -124,7 +127,7 @@ def record_run(conn: sqlite3.Connection, products: Iterable[Product]) -> dict[st
                 """,
                 (p.source, p.sku, p.name, p.url, p.image, p.brand, now, now),
             )
-            counters["new"] += 1
+            new += 1
         else:
             conn.execute(
                 """
@@ -134,7 +137,7 @@ def record_run(conn: sqlite3.Connection, products: Iterable[Product]) -> dict[st
                 """,
                 (p.name, p.url, p.image, p.brand, now, p.source, p.sku),
             )
-            counters["updated"] += 1
+            updated += 1
 
         conn.execute(
             """
@@ -151,16 +154,26 @@ def record_run(conn: sqlite3.Connection, products: Iterable[Product]) -> dict[st
 
         if prev is not None:
             if p.price < prev["price"]:
-                counters["price_drop"] += 1
+                price_drop += 1
             prev_had_discount = (
                 prev["list_price"] is not None and prev["list_price"] > prev["price"]
             )
             if p.has_discount and not prev_had_discount:
-                counters["new_promo"] += 1
+                new_promo += 1
         elif p.has_discount:
-            counters["new_promo"] += 1
+            new_promo += 1
 
-    return counters
+    return RunResult(RunCounters(
+        new=new,
+        updated=updated,
+        price_drop=price_drop,
+        new_promo=new_promo,
+    ))
+
+
+def record_run(conn: sqlite3.Connection, products: Iterable[Product]) -> dict[str, int]:
+    """Persist a run. Returns counters: {'new', 'updated', 'price_drop', 'new_promo'}."""
+    return record_run_result(conn, products).as_dict()
 
 
 # Thresholds (moderados, conforme decisão do usuário em 2026-05-09)
@@ -199,17 +212,8 @@ def _ranked_with_prev(since: str) -> str:
     """
 
 
-def find_changes(conn: sqlite3.Connection, since: str) -> dict:
-    """Detecta 4 categorias de mudança desde `since`:
-
-    - 'new_promo': produto começou um desconto (ou caiu mais)
-    - 'price_up': preço subiu ≥5% (e não acabou — está coberto em 'ended')
-    - 'ended':    promo acabou (price agora == list_price; antes price < list_price)
-    - 'weaker':   promo enfraqueceu (desconto % encolheu ≥25% relativo)
-
-    Retorna dict[str, list[sqlite3.Row]]. Categorias são mutuamente exclusivas
-    pra cada SKU dentro do mesmo run (priorização: new_promo > ended > weaker > price_up).
-    """
+def find_change_set(conn: sqlite3.Connection, since: str) -> ChangeSet:
+    """Detect changes since `since` and return the typed domain result."""
     base = _ranked_with_prev(since)
 
     new_promo = list(conn.execute(
@@ -272,30 +276,35 @@ def find_changes(conn: sqlite3.Connection, since: str) -> dict:
     ))
     price_up = [r for r in price_up_raw if (r["source"], r["sku"]) not in covered]
 
-    return {
-        "new_promo": new_promo,
-        "ended": ended,
-        "weaker": weaker,
-        "price_up": price_up,
-    }
+    return ChangeSet(
+        new_promo=new_promo,
+        ended=ended,
+        weaker=weaker,
+        price_up=price_up,
+    )
+
+
+def find_changes(conn: sqlite3.Connection, since: str) -> dict:
+    """Detecta 4 categorias de mudança desde `since`:
+
+    - 'new_promo': produto começou um desconto (ou caiu mais)
+    - 'price_up': preço subiu ≥5% (e não acabou — está coberto em 'ended')
+    - 'ended':    promo acabou (price agora == list_price; antes price < list_price)
+    - 'weaker':   promo enfraqueceu (desconto % encolheu ≥25% relativo)
+
+    Retorna dict[str, list[sqlite3.Row]]. Categorias são mutuamente exclusivas
+    pra cada SKU dentro do mesmo run (priorização: new_promo > ended > weaker > price_up).
+    """
+    return find_change_set(conn, since).as_dict()
 
 
 def find_new_promotions(conn: sqlite3.Connection, since: str) -> list:
     """Backwards-compatible wrapper — retorna só a categoria new_promo."""
-    return find_changes(conn, since)["new_promo"]
+    return find_change_set(conn, since).new_promo
 
 
-def snapshot_promotions(conn: sqlite3.Connection) -> dict:
-    """Retorna TODOS os produtos atualmente em promoção (último snapshot por SKU),
-    no mesmo formato de `find_changes` — todos sob a categoria 'new_promo'.
-
-    Diferente de find_changes: ignora a janela temporal e o estado anterior.
-    Pensado pro subcomando `snapshot`, que dá o panorama completo do dia
-    independentemente de "já foi notificado".
-
-    As linhas têm prev_price=NULL (compatível com formatador) e mantêm os
-    mesmos nomes de colunas que o resto do pipeline espera.
-    """
+def snapshot_promotion_set(conn: sqlite3.Connection) -> ChangeSet:
+    """Return all current promotions as a typed change set."""
     rows = list(conn.execute("""
         WITH latest AS (
             SELECT source, sku, list_price, price, sizes, stock_qty, observed_at,
@@ -316,4 +325,18 @@ def snapshot_promotions(conn: sqlite3.Connection) -> dict:
            AND l.list_price > l.price
          ORDER BY (1.0 - l.price / l.list_price) DESC, p.source, p.name
     """))
-    return {"new_promo": rows, "ended": [], "weaker": [], "price_up": []}
+    return ChangeSet(new_promo=rows, ended=[], weaker=[], price_up=[])
+
+
+def snapshot_promotions(conn: sqlite3.Connection) -> dict:
+    """Retorna TODOS os produtos atualmente em promoção (último snapshot por SKU),
+    no mesmo formato de `find_changes` — todos sob a categoria 'new_promo'.
+
+    Diferente de find_changes: ignora a janela temporal e o estado anterior.
+    Pensado pro subcomando `snapshot`, que dá o panorama completo do dia
+    independentemente de "já foi notificado".
+
+    As linhas têm prev_price=NULL (compatível com formatador) e mantêm os
+    mesmos nomes de colunas que o resto do pipeline espera.
+    """
+    return snapshot_promotion_set(conn).as_dict()

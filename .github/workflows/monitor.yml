@@ -2,8 +2,8 @@ name: monitor
 
 on:
   schedule:
-    # 12:00 UTC = 09:00 BRT  → modo "alert" (notificações ao vivo)
-    # 21:00 UTC = 18:00 BRT  → modo "digest" (resumo do dia, 4 seções)
+    # 12:00 UTC = 09:00 BRT  → modo "alert" (ao vivo; resume sozinho se vier muita coisa)
+    # 21:00 UTC = 18:00 BRT  → modo "digest" (resumo do dia agrupado por tipo de peça)
     - cron: "0 12,21 * * *"
   workflow_dispatch:
     inputs:
