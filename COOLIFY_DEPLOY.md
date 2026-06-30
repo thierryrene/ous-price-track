@@ -1,4 +1,4 @@
-# Plano de Ação: Deploy do OUS Price Monitor no Coolify (Com Agente de IA AGY)
+# Plano de Ação: Deploy do OUS Price Monitor no Coolify
 
 Este documento descreve o plano de ação, o contexto de desenvolvimento e os passos necessários para realizar o deploy da aplicação **ous-price-monitor** no Coolify (Digital Ocean).
 
@@ -6,10 +6,7 @@ A aplicação conta com um **sistema híbrido operacional**:
 1. **GitHub Actions:** agenda diária do monitor e persistência do `data/prices.db`.
 2. **Coolify/FastAPI:** servidor do bot Telegram para webhooks e ações on-demand por botões.
 
-O código contém a integração AGY/Gemini, mas o webhook atual responde mensagens
-de texto comum com o **menu** (IA desativada no caminho do webhook). A consulta
-SQL do agente já usa modo read-only; reative a IA somente após validar também o
-rate limit.
+O bot é **orientado a botões** (menus inline); mensagens de texto comum recebem o menu.
 
 ---
 
@@ -18,14 +15,11 @@ rate limit.
 Migramos a infraestrutura para rodar em modo servidor na VPS da Digital Ocean gerenciada pelo Coolify para suportar webhooks do Telegram de forma estável.
 
 ### Componentes Integrados:
-1. **Servidor API Webhook Híbrido (`src/ous_monitor/server.py`):** Servidor FastAPI que gerencia webhooks do Telegram. 
-   * Mensagens de callback (clique nos botões inline) disparam tarefas tradicionais de scraping em segundo plano.
-   * Mensagens de texto comum retornam o menu do monitor (IA desativada no webhook).
-2. **Agente de IA (AGY SDK):** Configurado para usar o modelo `gemini-1.5-flash` quando reativado. O agente possui duas ferramentas em Python:
-   * `query_prices_db`: Executa queries SQL no banco SQLite local para extrair histórico de preços e insights.
-   * `run_store_scraper`: Dispara o scraper de uma loja e atualiza a base de dados.
-3. **Notificador (`src/ous_monitor/notifier.py`):** Anexa o teclado de menu do bot no final de cada resposta gerada pelo monitor ou pelo agente da IA, permitindo continuidade na interação.
-4. **Dockerfile e Docker Compose:** Conteineriza o app sobre a base Ubuntu Noble (`mcr.microsoft.com/playwright/python:*-noble`), escolhida pelo glibc 2.39 que o SDK do Antigravity exige.
+1. **Servidor API Webhook (`src/ous_monitor/server.py`):** Servidor FastAPI que gerencia webhooks do Telegram.
+   * Mensagens de callback (clique nos botões inline) disparam tarefas de scraping em segundo plano.
+   * Mensagens de texto comum retornam o menu do monitor.
+2. **Notificador (`src/ous_monitor/notifier.py`):** Anexa o teclado de menu do bot no final de cada resposta, permitindo continuidade na interação.
+3. **Dockerfile e Docker Compose:** Conteineriza o app sobre `python:3.12-slim` (Debian). Todas as dependências são Python puro / wheels manylinux — sem navegador.
 
 ---
 
@@ -44,11 +38,9 @@ Migramos a infraestrutura para rodar em modo servidor na VPS da Digital Ocean ge
 Na aba **Environment Variables** do Coolify, adicione:
 * `TELEGRAM_BOT_TOKEN`: O token fornecido pelo `@BotFather`.
 * `TELEGRAM_CHAT_ID`: O ID do chat onde os alertas devem ser entregues.
-<<<<<<< HEAD
 * `TELEGRAM_WEBHOOK_SECRET`: segredo enviado no `setWebhook` e validado pelo servidor.
 * `TELEGRAM_ALLOWED_CHAT_IDS`: lista de chats autorizados, separada por vírgula.
 * `WEBHOOK_ADMIN_TOKEN`: Token administrativo para `/setup-webhook` e `/status` (nome legado `ADMIN_TOKEN` também aceito).
-* `GEMINI_API_KEY` *(Opcional)*: chave do Gemini API, necessária apenas se a IA AGY for reativada.
 
 ### Passo 4: Build e Deploy
 1. Clique em **Deploy** no topo direito do painel e aguarde a finalização da build.
@@ -71,6 +63,3 @@ Com o webhook ativo, abra a conversa com seu bot no Telegram e teste:
 
 1. Envie `/start` ou `/menu`.
 2. Clique em `🟧 OUS`, `⚽ Umbro`, `📊 Snapshot Geral` ou nas opções de catálogo.
-3. **Via Chat (IA, se reativada):** mensagens de texto hoje retornam o menu; com a
-   IA reativada, frases como *"Qual foi a maior queda de preço nas últimas semanas?"*
-   seriam respondidas pelo agente AGY.

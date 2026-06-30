@@ -9,7 +9,6 @@ dependencies = [
     "curl_cffi>=0.7",
     "fastapi>=0.100",
     "uvicorn>=0.22",
-    "google-antigravity",
 ]
 
 [project.scripts]

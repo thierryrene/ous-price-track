@@ -11,13 +11,13 @@
 - **Deploy via Docker Compose** on DigitalOcean VPS, proxied by Traefik (Coolify).
 - **Domain**: `https://price-monitor.thierryrenematos.tec.br`
 - **DB bind-mount**: `./data:/app/data` so container reads/writes the host's `prices.db` directly.
-- **Ubuntu 24.04 (Noble)** base image for glibc 2.39 (needed by `google-antigravity` SDK).
-- **Telegram bot** has inline GUI menus; plain text messages are ignored (no AI by default).
+- **Docker base** `python:3.12-slim` (Debian) — all deps are pure-Python/manylinux, no browser. (Centauro/Playwright and the google-antigravity AI agent were removed.)
+- **Telegram bot** is button-driven (inline menus); plain text returns the menu — no AI chat.
 
 ## Discovered Durable Knowledge
 
 - `prices.db` is ~13.6 MB with historical price data from multiple scrapers.
-- `.env` contains `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `GEMINI_API_KEY`.
+- `.env` contains `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, and webhook security vars.
 - Webhook URL: `https://price-monitor.thierryrenematos.tec.br/setup-webhook?url=...`
 - Deploy command: `docker compose up -d --build`
 - Logs: `docker logs -f ous-price-monitor`

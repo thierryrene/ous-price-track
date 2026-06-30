@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sqlite3
 import httpx
 from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
@@ -17,7 +16,6 @@ from .notifier import (
 )
 from urllib.parse import urlparse
 from .services import CatalogService, MonitorService, ProductFilters, run_exclusive
-from .sources import source_keys
 from .storage import connect, find_changes, latest_source_runs
 
 log = logging.getLogger("ous_monitor.server")
@@ -77,56 +75,6 @@ async def _send_text(bot_token: str, chat_id: str | int, text: str, *,
             json=payload,
             timeout=10.0,
         )
-
-
-def query_prices_db(sql_query: str) -> str:
-    """Executa consultas SQL de leitura (SELECT) no banco de dados SQLite local.
-    Útil para recuperar informações de produtos, histórico de preços e descontos.
-
-    Args:
-        sql_query: Uma string de consulta SQL SELECT válida.
-    """
-    try:
-        sql = sql_query.strip()
-        sql_lower = sql.lower()
-        if not (sql_lower.startswith("select") or sql_lower.startswith("with")):
-            return "Erro: somente consultas SELECT/WITH de leitura são permitidas."
-        if ";" in sql.rstrip(";"):
-            return "Erro: apenas uma instrução SQL por consulta é permitida."
-        db_uri = f"file:{DEFAULT_DB}?mode=ro"
-        with sqlite3.connect(db_uri, uri=True) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute(sql)
-            rows = cursor.fetchmany(100)
-            return str([dict(row) for row in rows])
-    except Exception as e:
-        return f"Erro ao executar query: {str(e)}"
-
-
-def run_store_scraper(store: str) -> str:
-    """Executa a varredura (scraping) de preços em uma loja específica e atualiza o banco de dados.
-
-    Args:
-        store: A loja para varrer (qualquer chave de `sources.SOURCES`).
-    """
-    valid_stores = tuple(source_keys())
-    if store not in valid_stores:
-        return (f"Erro: Loja desconhecida '{store}'. Escolha entre "
-                f"{', '.join(valid_stores)}.")
-    try:
-        result = run_exclusive(
-            lambda: MonitorService(DEFAULT_DB).run(
-                sources=[store],
-                mode="alert",
-                digest_hours=24,
-            )
-        )
-        if result.scrape.products:
-            return f"Sucesso! A loja '{store}' foi re-analisada e os preços no banco local foram atualizados."
-        return f"Atenção: a loja '{store}' não retornou produtos."
-    except Exception as e:
-        return f"Falha na execução do scraper da loja '{store}': {str(e)}"
 
 
 def run_daily_promos_task(bot_token: str, chat_id: str, category: str = "tudo"):
@@ -566,96 +514,6 @@ def normalize_catalog_apply() -> str:
         return f"🧹 <b>{result.removed} registro(s) limpo(s) na normalização.</b>\n\nProdutos mantidos no banco para preservar histórico."
     except Exception as e:
         return f"❌ Erro ao normalizar: {str(e)}"
-
-
-async def run_agy_agent_chat(user_message: str, bot_token: str, chat_id: str):
-    """Inicializa e executa o agente de IA do Antigravity para interagir com o usuário."""
-    gemini_api_key = os.environ.get("GEMINI_API_KEY")
-    if not gemini_api_key:
-        try:
-            async with httpx.AsyncClient() as client:
-                await client.post(
-                    f"{API_BASE}/bot{bot_token}/sendMessage",
-                    json={
-                        "chat_id": chat_id,
-                        "text": (
-                            "❌ <b>GEMINI_API_KEY não encontrada no servidor!</b>\n"
-                            "Para conversar por chat e utilizar a inteligência do Agy, configure a variável "
-                            "<code>GEMINI_API_KEY</code> no painel do Coolify."
-                        ),
-                        "parse_mode": "HTML",
-                    },
-                    timeout=10.0,
-                )
-        except Exception:
-            log.exception("Erro ao alertar usuário sobre GEMINI_API_KEY ausente")
-        return
-
-    # Envia ação de "digitando..." para feedback visual no Telegram
-    try:
-        async with httpx.AsyncClient() as client:
-            await client.post(
-                f"{API_BASE}/bot{bot_token}/sendChatAction",
-                json={"chat_id": chat_id, "action": "typing"},
-                timeout=5.0,
-            )
-    except Exception:
-        pass
-
-    try:
-        from google.antigravity import Agent, LocalAgentConfig
-
-        config = LocalAgentConfig(
-            api_key=gemini_api_key,
-            model="gemini-1.5-flash",  # Modelo ideal para chat de ferramentas rápido
-            tools=[query_prices_db, run_store_scraper],
-            system_instructions=(
-                "Você é o Agy, o assistente inteligente de IA do Thierry para o monitor de preços de calçados ÖUS. "
-                "Você ajuda o Thierry a analisar tendências de preços, encontrar descontos e decidir a melhor hora para comprar. "
-                "Você tem acesso ao banco de dados histórico local através da ferramenta query_prices_db. Use-a sempre que precisar "
-                "obter dados de preços, tamanhos disponíveis e estoques. "
-                "Se o Thierry pedir para atualizar, varrer ou sincronizar uma loja específica, use run_store_scraper. "
-                "Sempre responda em português brasileiro de forma amigável, direta e visualmente limpa. "
-                "ATENÇÃO: Formate sua resposta em HTML do Telegram usando apenas tags permitidas: <b>, <i>, <code>, <pre> e links <a href='...'>. "
-                "Nunca use markdown puro (como asteriscos ** para negrito ou hashtags # para títulos) na sua mensagem final; converta em tags HTML equivalentes. "
-                "Assine sua mensagem com '— Agy 🤖'."
-            ),
-        )
-
-        async with Agent(config) as agent:
-            response = await agent.chat(user_message)
-            full_response = ""
-            async for chunk in response:
-                full_response += chunk
-
-            # Envia a resposta final para o chat no Telegram
-            async with httpx.AsyncClient() as client:
-                await client.post(
-                    f"{API_BASE}/bot{bot_token}/sendMessage",
-                    json={
-                        "chat_id": chat_id,
-                        "text": full_response,
-                        "parse_mode": "HTML",
-                        "disable_web_page_preview": True,
-                        "reply_markup": MENU_KEYBOARD,  # Inclui o menu com os botões inline no rodapé
-                    },
-                    timeout=15.0,
-                )
-    except Exception as e:
-        log.exception("Falha durante execução do agente de IA AGY")
-        try:
-            async with httpx.AsyncClient() as client:
-                await client.post(
-                    f"{API_BASE}/bot{bot_token}/sendMessage",
-                    json={
-                        "chat_id": chat_id,
-                        "text": f"❌ <b>Erro no Agente de IA:</b>\n<pre>{str(e)}</pre>",
-                        "parse_mode": "HTML",
-                    },
-                    timeout=10.0,
-                )
-        except Exception:
-            pass
 
 
 @app.get("/health")

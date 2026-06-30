@@ -5,7 +5,7 @@
 **ous-price-monitor** — Daily price monitor for streetwear/shoe brands: **OÜS**, **BaW Clothing**, **Adidas**, **Umbro**, and **Approve** (Adidas only via Netshoes Club). GitHub Actions runs the scheduled monitor; Coolify/FastAPI serves Telegram on-demand actions.
 
 - **Language:** Python 3.10+ (uses modern type syntax and `from __future__ import annotations`)
-- **Dependencies:** httpx, selectolax, curl_cffi, FastAPI, uvicorn, google-antigravity
+- **Dependencies:** httpx, selectolax, curl_cffi, FastAPI, uvicorn
 - **Database:** SQLite at `data/prices.db` with product snapshots plus `runs`/`source_runs`
 - **Notifications:** Telegram bot (alert/digest modes)
 - **Deploy:** Docker Compose on VPS Digital Ocean, reverse proxy via Traefik (Coolify)
@@ -109,12 +109,11 @@ From `.env` (auto-loaded by CLI):
 - `TELEGRAM_WEBHOOK_SECRET` — validated against Telegram webhook secret header
 - `TELEGRAM_ALLOWED_CHAT_IDS` — comma-separated allowlist for bot actions
 - `WEBHOOK_ADMIN_TOKEN` — protects `/setup-webhook` and `/status` (legacy alias `ADMIN_TOKEN` also accepted)
-- `GEMINI_API_KEY` (optional) — For AI chat features in Telegram bot (AGY)
 - `SUMMARY_THRESHOLD` / `SUMMARY_PER_GROUP` (optional) — high-load summary tuning (see `notifier.build_summary`)
 
 ## Deployment Details
 
-- **Container base:** Ubuntu 24.04 (Noble) for glibc 2.39 compatibility
+- **Container base:** `python:3.12-slim` (Debian) — pure-Python/manylinux deps, no browser
 - **DB persistence:** bind-mount `./data:/app/data` (not Docker volume)
 - **Port:** 8000 exposed internally, no host port binding (Traefik handles routing)
 - **Webhook:** configured at `/setup-webhook?url=...&admin_token=...`
@@ -126,7 +125,7 @@ FastAPI server (`server.py`) with inline keyboard menus:
 - **DB Menu**: ÖUS, Netshoes, BaW, Adidas, Umbro — SQLite queries returning active promos
 - **Scrapers Menu**: Individual or bulk (`Rodar Todas`) scraper triggers
 
-Text messages (non-command) return menu prompt — AI chat is currently disabled.
+Text messages (non-command) return the menu prompt. The bot is button-driven (no AI chat).
 
 ## Tests
 

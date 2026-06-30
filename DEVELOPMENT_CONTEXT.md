@@ -15,9 +15,9 @@ Este documento registra o estado atual do projeto **ous-price-monitor** no servi
 
 ## 🛠️ Modificações Realizadas na Infraestrutura (Docker)
 
-### 1. Atualização do SO Base para Solução de Link Dinâmico (glibc)
-* **Problema:** O binário `localharness` (do SDK `google-antigravity`) necessitava de uma versão do `glibc` com suporte a `GLIBC_ABI_DT_RELR`, que não estava disponível no Ubuntu 22.04 (Jammy).
-* **Solução:** Alteramos a imagem base no [Dockerfile](file:///root/price-monitor-thierry/Dockerfile) de `v1.48.0-jammy` para `v1.48.0-noble` (Ubuntu 24.04). A nova versão possui o `glibc` 2.39 e resolveu o erro de execução em testes no Telegram.
+### 1. Imagem base enxuta (`python:3.12-slim`)
+* **Histórico:** a base Ubuntu Noble (`mcr.microsoft.com/playwright/python:*-noble`) existia por dois motivos hoje removidos: o Playwright (scraper da Centauro) e o binário `localharness` do SDK `google-antigravity`, que exigia `glibc` ≥ 2.39.
+* **Solução atual:** com a Centauro e o AGY/antigravity removidos, o [Dockerfile](file:///root/price-monitor-thierry/Dockerfile) usa `python:3.12-slim` (Debian). Todas as dependências restantes (httpx, selectolax, curl_cffi, fastapi, uvicorn) são Python puro / wheels manylinux — imagem ~5× menor, sem navegador.
 
 ### 2. Mapeamento do Banco de Dados Histórico (`prices.db`)
 * **Problema:** O container estava utilizando um volume nomeado Docker isolado e vazio, perdendo as consultas rápidas do histórico de preços.
@@ -38,19 +38,18 @@ As variáveis de ambiente foram recuperadas de forma segura do GitHub Actions vi
 * `WEBHOOK_ADMIN_TOKEN`
 * `TELEGRAM_WEBHOOK_SECRET`
 * `TELEGRAM_ALLOWED_CHAT_IDS` (opcional; se vazio, usa `TELEGRAM_CHAT_ID`)
-* `GEMINI_API_KEY` (somente se a IA for reativada)
 
 ---
 
 ## 🕹️ Evolução da Interface do Bot (Telegram)
 
-Para focar na **interface determinística por botões** e deixar a IA em segundo plano, a lógica atual em [server.py](file:///root/price-monitor-thierry/src/ous_monitor/server.py) e [notifier.py](file:///root/price-monitor-thierry/src/ous_monitor/notifier.py) usa menu inline direto e valida webhook/chat quando as variáveis de segurança estão configuradas.
+A interface é **determinística por botões**: a lógica em [server.py](file:///root/price-monitor-thierry/src/ous_monitor/server.py) e [notifier.py](file:///root/price-monitor-thierry/src/ous_monitor/notifier.py) usa menu inline direto e valida webhook/chat quando as variáveis de segurança estão configuradas.
 
 ### 1. Menu Inline Principal
 O `MENU_KEYBOARD` é gerado a partir do registry de fontes e permite rodar fontes individuais, `Rodar Todas`, `Snapshot Geral` e o menu de promoções das últimas 24h.
 
-### 2. Bypass de IA no Chat de Texto
-* Qualquer mensagem de texto comum enviada ao bot (que não seja `/start` ou `/menu`) devolve a mensagem padrão para utilizar os botões interativos, ignorando a execução da IA/Gemini para economizar tokens e garantir estabilidade.
+### 2. Chat de Texto
+* Qualquer mensagem de texto comum (que não seja `/start` ou `/menu`) devolve a mensagem padrão para usar os botões interativos. O bot não tem chat com IA.
 
 ### 3. Rastreabilidade Operacional
 O banco possui `runs` e `source_runs`, permitindo auditar última execução por fonte, contagens brutas/filtradas, falhas e `run_id`. Use:
@@ -78,11 +77,3 @@ No diretório `/root/price-monitor-thierry`:
   ```bash
   curl -s "https://price-monitor.thierryrenematos.tec.br/setup-webhook?url=https://price-monitor.thierryrenematos.tec.br&token=$WEBHOOK_ADMIN_TOKEN"
   ```
-
-### Como Reativar a IA (Agy) se desejar futuramente:
-1. No arquivo [server.py](file:///root/price-monitor-thierry/src/ous_monitor/server.py), vá até a seção de tratamento de mensagens de texto comuns (linhas ~313-320).
-2. Substitua o envio do menu padrão pelo agendamento da tarefa da IA:
-   ```python
-   # Exemplo de reativação da IA:
-   background_tasks.add_task(run_agy_agent_chat, text, bot_token, str(chat_id))
-   ```
