@@ -1,4 +1,4 @@
-# MIMO.md — Context for the MiMo Code Agent
+# GEMINI.md — Context for Gemini CLI
 
 A orientação de projeto é **única e compartilhada por todos os agentes** e vive
 em **[AGENTS.md](AGENTS.md)**. Leia o `AGENTS.md` antes de trabalhar neste repo

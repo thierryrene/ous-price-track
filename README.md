@@ -1,8 +1,8 @@
 # ous-price-monitor
 
 Monitor diário de promoções das marcas **ÖUS**, **BaW Clothing**, **Adidas**,
-**Umbro** e **Approve** (Adidas só no Clube Netshoes). Varre 9 fontes, guarda
-histórico de preços em
+**Umbro** e **Approve** (Adidas só no Clube Netshoes). Varre 8 fontes (7 no cron
+diário + Approve on-demand), guarda histórico de preços em
 SQLite e relata produtos que **entraram em promoção** desde a última execução.
 
 ## Fontes
