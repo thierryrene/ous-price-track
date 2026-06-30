@@ -36,6 +36,14 @@ REQUEST_DELAY_S = 1.5
 TIMEOUT_S = 30.0
 MAX_PAGES_HARD_CAP = 200  # safety net (Adidas tem ~164 páginas; ÖUS ~5, BaW ~2)
 
+# Netshoes rate-limita (429) IPs compartilhados — runners de CI especialmente.
+# Em vez de falhar de imediato, repetimos com backoff exponencial, respeitando
+# o header Retry-After quando presente.
+RETRY_STATUSES = {429, 503}
+MAX_RETRIES = 4
+BACKOFF_BASE_S = 3.0
+MAX_BACKOFF_S = 60.0
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -50,6 +58,42 @@ HEADERS = {
 }
 
 _INITIAL_STATE_RE = re.compile(r"window\.__INITIAL_STATE__\s*=\s*")
+
+
+def _retry_after_seconds(resp: "httpx.Response") -> Optional[float]:
+    """Lê o header Retry-After (segundos). Ignora formato de data HTTP."""
+    raw = resp.headers.get("Retry-After")
+    if not raw:
+        return None
+    try:
+        return max(0.0, float(raw.strip()))
+    except (TypeError, ValueError):
+        return None
+
+
+def _get_with_retry(client: httpx.Client, params: dict) -> "httpx.Response":
+    """GET com backoff exponencial em 429/503 (respeitando Retry-After).
+
+    Após esgotar as tentativas, propaga o erro via raise_for_status (a fonte
+    é registrada como 'failed', sem derrubar as demais)."""
+    for attempt in range(MAX_RETRIES + 1):
+        resp = client.get(SEARCH_PATH, params=params)
+        if resp.status_code in RETRY_STATUSES and attempt < MAX_RETRIES:
+            wait = _retry_after_seconds(resp)
+            if wait is None:
+                wait = BACKOFF_BASE_S * (2 ** attempt)
+            wait = min(wait, MAX_BACKOFF_S)
+            log.warning(
+                "netshoes: HTTP %d (rate-limit) em %s; aguardando %.1fs "
+                "(tentativa %d/%d)",
+                resp.status_code, params, wait, attempt + 1, MAX_RETRIES,
+            )
+            time.sleep(wait)
+            continue
+        resp.raise_for_status()
+        return resp
+    resp.raise_for_status()  # última resposta ainda em erro — propaga
+    return resp
 
 
 def _extract_initial_state(html: str) -> Optional[dict]:
@@ -161,8 +205,7 @@ class NetshoesScraper:
         page = 1
         total_pages: Optional[int] = None
         while page <= MAX_PAGES_HARD_CAP:
-            resp = client.get(SEARCH_PATH, params={**self._params, "page": page})
-            resp.raise_for_status()
+            resp = _get_with_retry(client, {**self._params, "page": page})
             state = _extract_initial_state(resp.text)
             if not state:
                 log.warning("%s p%d: __INITIAL_STATE__ não encontrado",

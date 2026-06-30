@@ -112,6 +112,7 @@ SOURCES: Dict[str, SourceConfig] = {
         color="#ff3838",
         bg="rgba(255, 56, 56, 0.15)",
         border="#ff3838",
+        run_in_ci=False,  # só on-demand (bot); fora do cron diário
     ),
 }
 
