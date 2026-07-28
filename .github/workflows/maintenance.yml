@@ -1,0 +1,70 @@
+name: database-maintenance
+
+on:
+  schedule:
+    # Domingo, 10:00 UTC (07:00 BRT), fora das janelas de scraping.
+    - cron: "0 10 * * 0"
+  workflow_dispatch:
+
+concurrency:
+  group: monitor
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  maintain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Instalar projeto
+        run: python -m pip install .
+
+      - name: Backup, retenção segura e compactação
+        run: |
+          PYTHONPATH=src python -m ous_monitor.cli maintain --apply \
+            --retention-days 90 \
+            --run-retention-days 180 \
+            --max-db-mb 50 \
+            --backup-keep 1 \
+            --backup-dir data/backups-ci
+
+      - name: Guardar backup anterior à manutenção
+        uses: actions/upload-artifact@v4
+        with:
+          name: prices-db-before-maintenance-${{ github.run_id }}
+          path: data/backups-ci/*.db
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Commitar DB compactado se mudou
+        run: |
+          if git diff --quiet -- data/prices.db; then
+            echo "DB inalterado — nada a commitar."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/prices.db
+          git commit -m "chore(data): manutenção preventiva $(date -u +%Y-%m-%d)"
+          git push
+
+      - name: Validar limite preventivo de 50 MB
+        run: |
+          size=$(stat -c %s data/prices.db)
+          limit=$((50 * 1024 * 1024))
+          echo "Tamanho final: $size bytes; limite: $limit bytes"
+          test "$size" -le "$limit"

@@ -64,9 +64,11 @@ PYTHONPATH=src python -m ous_monitor.cli status
 # dashboard HTML / limpeza por filtros (dry-run por padrão)
 PYTHONPATH=src python -m ous_monitor.cli export-html
 PYTHONPATH=src python -m ous_monitor.cli purge          # --apply para deletar
+PYTHONPATH=src python -m ous_monitor.cli maintain       # --apply: backup + limpeza + VACUUM
 ```
 
-Subcomandos: `run`, `snapshot`, `report`, `list`, `purge`, `export-html`, `status`.
+Subcomandos: `run`, `snapshot`, `report`, `list`, `purge`, `maintain`,
+`export-html`, `status`.
 Flags de notificação: `--mode {alert,digest}`, `--no-telegram`, `--dry-run-telegram`.
 
 ### Testes
@@ -110,7 +112,10 @@ Tudo sob `src/ous_monitor/`:
    de arquivo** (`fcntl`, exclusão entre processos cron×bot), roda cada scraper
    isolado (um caindo não derruba os outros), grava run-tracking, persiste e
    detecta mudanças. `CatalogService`: queries de catálogo, `purge`, `normalize`,
-   stats. `SourceRegistry` projeta `sources.SOURCES`.
+   stats e manutenção preventiva com backup SQLite consistente. A retenção
+   remove apenas observações antigas que tenham uma sucessora, preservando
+   sempre a última referência de cada SKU. `SourceRegistry` projeta
+   `sources.SOURCES`.
 5. **CLI** (`cli.py`) — adaptador fino sobre os serviços + saída no terminal e
    dispatch de notificação.
 6. **Notifier** (`notifier.py`) — Telegram (ver abaixo).
@@ -239,6 +244,10 @@ há chat com IA). Variáveis:
 - `TELEGRAM_WEBHOOK_SECRET` — validado no header em `/webhook`.
 - `TELEGRAM_ALLOWED_CHAT_IDS` — allowlist (vírgula); vazio → usa `TELEGRAM_CHAT_ID`.
 - `SUMMARY_THRESHOLD` / `SUMMARY_PER_GROUP` — ajuste do resumo.
+- `AUTO_MAINTENANCE_ENABLED` (default `true`) — ativa autocuidado diário no
+  servidor. Defaults: início após 300s, intervalo 24h, histórico 90 dias, runs
+  180 dias, alerta acima de 50 MB e 7 backups em `data/backups/`. As variáveis
+  `MAINTENANCE_*` correspondentes estão documentadas no `.env.example`.
 
 ## Deploy
 
@@ -246,7 +255,9 @@ há chat com IA). Variáveis:
   wheels manylinux — sem navegador. `CMD` sobe `uvicorn ous_monitor.server:app`.
 - **GitHub Actions** (`.github/workflows/monitor.yml`): 2×/dia, instala só
   `httpx`+`selectolax`, roda as 8 fontes de CI e commita o `data/prices.db`
-  atualizado (estado entre execuções). `snapshot.yml` é manual.
+  atualizado (estado entre execuções). `maintenance.yml` roda aos domingos,
+  guarda por 14 dias um artifact do DB anterior, aplica retenção/compactação e
+  commita o resultado. `snapshot.yml` é manual.
 - **Coolify/VPS:** Docker Compose + Traefik; bind-mount `./data:/app/data`.
 
 ## Versão do Python

@@ -13,6 +13,7 @@ data/*.db-wal
 data/*.db-shm
 data/.monitor.lock
 data/.health_write
+data/backups/
 data/snapshots/
 data/run.log
 logs/

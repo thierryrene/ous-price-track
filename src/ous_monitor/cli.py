@@ -8,6 +8,7 @@ Subcomandos:
   report     — mostra promoções novas desde uma data sem rodar scraper
   list       — lista todos os produtos atualmente em promoção (snapshot mais recente)
   purge      — remove do DB produtos que falham os filtros (default dry-run)
+  maintain   — backup consistente, retenção segura e compactação preventiva
 
 Filtros de ingestão (gênero/idade + calçados 42/43 + roupas M/G/GG) vivem em
 `filters.py` e são aplicados em `_scrape_and_persist`. O DB é considerado fonte da verdade — o
@@ -300,6 +301,45 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_maintain(args: argparse.Namespace) -> int:
+    service = CatalogService(args.db)
+    if not args.apply:
+        result = service.normalize_dry(retention_days=args.retention_days)
+        stats = service.db_stats()
+        print("=== Manutenção preventiva — dry-run ===")
+        print(f"DB: {int(stats['db_size']) / (1024 * 1024):.1f} MB")
+        print(
+            f"Observações removíveis após {args.retention_days} dias: "
+            f"{result.old_observations} (a última de cada SKU será preservada)"
+        )
+        print(f"Produtos com preço inválido: {result.bad_price_products}")
+        print("Nada foi alterado. Use --apply para criar backup e executar.")
+        return 0
+
+    result = service.maintain(
+        retention_days=args.retention_days,
+        max_db_mb=args.max_db_mb,
+        backup_keep=args.backup_keep,
+        backup_dir=args.backup_dir,
+        run_retention_days=args.run_retention_days,
+    )
+    print("=== Manutenção preventiva — concluída ===")
+    print(f"Backup: {result.backup_path}")
+    print(f"Observações antigas removidas: {result.removed_observations}")
+    print(f"Produtos inválidos removidos: {result.removed_bad_products}")
+    print(f"Execuções antigas removidas: {result.removed_runs}")
+    print(
+        f"DB: {result.before_bytes / (1024 * 1024):.1f} MB → "
+        f"{result.after_bytes / (1024 * 1024):.1f} MB"
+    )
+    if not result.within_size_limit:
+        print(
+            f"⚠ DB permanece acima do limite de {args.max_db_mb} MB; "
+            "é necessária inspeção."
+        )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ous-monitor")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB, help="caminho do SQLite (default: data/prices.db)")
@@ -371,6 +411,18 @@ def main(argv: list[str] | None = None) -> int:
 
     p_status = sub.add_parser("status", help="mostra a última execução registrada por fonte")
     p_status.set_defaults(func=cmd_status)
+
+    p_maintain = sub.add_parser(
+        "maintain",
+        help="faz backup, aplica retenção segura e compacta o SQLite",
+    )
+    p_maintain.add_argument("--apply", action="store_true")
+    p_maintain.add_argument("--retention-days", type=int, default=90)
+    p_maintain.add_argument("--run-retention-days", type=int, default=180)
+    p_maintain.add_argument("--max-db-mb", type=int, default=50)
+    p_maintain.add_argument("--backup-keep", type=int, default=7)
+    p_maintain.add_argument("--backup-dir", type=Path)
+    p_maintain.set_defaults(func=cmd_maintain)
 
     args = parser.parse_args(argv)
     _setup_logging(args.verbose)

@@ -84,6 +84,23 @@ class NormalizeResult:
 
 
 @dataclass(frozen=True)
+class MaintenanceResult:
+    backup_path: Path
+    retention_days: int
+    removed_observations: int
+    removed_bad_products: int
+    removed_runs: int
+    before_bytes: int
+    after_bytes: int
+    max_bytes: int
+    vacuumed: bool
+
+    @property
+    def within_size_limit(self) -> bool:
+        return self.after_bytes <= self.max_bytes
+
+
+@dataclass(frozen=True)
 class ProductFilters:
     category: str = "all"
     max_price: str = "all"
@@ -360,12 +377,14 @@ class CatalogService:
                 conn.execute("DELETE FROM products WHERE source=? AND sku=?", (c.source, c.sku))
         return PurgeResult(result.candidates, result.observations, applied=True)
 
-    def normalize_dry(self) -> NormalizeResult:
-        old_threshold = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+    def normalize_dry(self, *, retention_days: int = 90) -> NormalizeResult:
+        old_threshold = (
+            datetime.now(timezone.utc) - timedelta(days=retention_days)
+        ).isoformat()
         stale_threshold = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
         with connect(self.db_path) as conn:
             old_observations = conn.execute(
-                "SELECT COUNT(*) FROM price_history WHERE observed_at < ?",
+                _old_observations_query("COUNT(*)"),
                 (old_threshold,),
             ).fetchone()[0]
             stale_products = conn.execute(
@@ -375,12 +394,21 @@ class CatalogService:
             bad_price = conn.execute(_bad_price_query("COUNT(*)")).fetchone()[0]
         return NormalizeResult(old_observations, stale_products, bad_price)
 
-    def normalize_apply(self) -> NormalizeResult:
-        dry = self.normalize_dry()
-        old_threshold = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+    def normalize_apply(self, *, retention_days: int = 90) -> NormalizeResult:
+        with monitor_file_lock(self.db_path):
+            return self._normalize_apply_locked(retention_days=retention_days)
+
+    def _normalize_apply_locked(self, *, retention_days: int) -> NormalizeResult:
+        dry = self.normalize_dry(retention_days=retention_days)
+        old_threshold = (
+            datetime.now(timezone.utc) - timedelta(days=retention_days)
+        ).isoformat()
         removed = 0
         with connect(self.db_path) as conn:
-            result = conn.execute("DELETE FROM price_history WHERE observed_at < ?", (old_threshold,))
+            result = conn.execute(
+                _old_observations_query("DELETE"),
+                (old_threshold,),
+            )
             removed += result.rowcount
             rows = list(conn.execute(_bad_price_query("ph.source, ph.sku")))
             for row in rows:
@@ -389,6 +417,96 @@ class CatalogService:
                 removed += 1
         return NormalizeResult(dry.old_observations, dry.stale_products,
                                dry.bad_price_products, removed, applied=True)
+
+    def maintain(
+        self,
+        *,
+        retention_days: int = 90,
+        max_db_mb: int = 50,
+        backup_keep: int = 7,
+        backup_dir: Path | None = None,
+        run_retention_days: int = 180,
+    ) -> MaintenanceResult:
+        """Back up and compact the DB while preserving each SKU's latest state."""
+        if retention_days < 1 or run_retention_days < 1:
+            raise ValueError("retention_days deve ser positivo")
+        if max_db_mb < 1 or backup_keep < 1:
+            raise ValueError("max_db_mb e backup_keep devem ser positivos")
+
+        backup_dir = backup_dir or self.db_path.parent / "backups"
+        max_bytes = max_db_mb * 1024 * 1024
+
+        with monitor_file_lock(self.db_path, timeout_s=30.0):
+            # Inicializa/migra o schema antes do backup, inclusive em uma base nova.
+            with connect(self.db_path) as conn:
+                conn.execute("SELECT 1")
+            before_bytes = self.db_path.stat().st_size if self.db_path.exists() else 0
+            backup_path = self._backup_locked(backup_dir, backup_keep)
+            normalized = self._normalize_apply_locked(retention_days=retention_days)
+
+            runs_threshold = (
+                datetime.now(timezone.utc) - timedelta(days=run_retention_days)
+            ).isoformat()
+            with connect(self.db_path) as conn:
+                removed_runs = conn.execute(
+                    "SELECT COUNT(*) FROM runs WHERE started_at < ?",
+                    (runs_threshold,),
+                ).fetchone()[0]
+                conn.execute(
+                    """
+                    DELETE FROM source_runs
+                     WHERE run_id IN (
+                         SELECT id FROM runs WHERE started_at < ?
+                     )
+                    """,
+                    (runs_threshold,),
+                )
+                conn.execute(
+                    "DELETE FROM runs WHERE started_at < ?",
+                    (runs_threshold,),
+                )
+
+            vacuumed = bool(normalized.removed or removed_runs or before_bytes > max_bytes)
+            if vacuumed:
+                conn = sqlite3.connect(self.db_path)
+                try:
+                    conn.execute("PRAGMA busy_timeout = 30000")
+                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    conn.execute("VACUUM")
+                finally:
+                    conn.close()
+
+            after_bytes = self.db_path.stat().st_size if self.db_path.exists() else 0
+
+        return MaintenanceResult(
+            backup_path=backup_path,
+            retention_days=retention_days,
+            removed_observations=normalized.old_observations,
+            removed_bad_products=normalized.bad_price_products,
+            removed_runs=removed_runs,
+            before_bytes=before_bytes,
+            after_bytes=after_bytes,
+            max_bytes=max_bytes,
+            vacuumed=vacuumed,
+        )
+
+    def _backup_locked(self, backup_dir: Path, backup_keep: int) -> Path:
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+        backup_path = backup_dir / f"prices-{stamp}.db"
+
+        source = sqlite3.connect(self.db_path)
+        destination = sqlite3.connect(backup_path)
+        try:
+            source.backup(destination)
+        finally:
+            destination.close()
+            source.close()
+
+        backups = sorted(backup_dir.glob("prices-*.db"), reverse=True)
+        for old_backup in backups[backup_keep:]:
+            old_backup.unlink()
+        return backup_path
 
 
 _scrape_lock = Lock()
@@ -414,6 +532,23 @@ def _category_sql(category: str) -> str:
         "agasalhos": " AND (LOWER(p.name) LIKE '%agasalho%' OR LOWER(p.name) LIKE '%moletom%' OR LOWER(p.name) LIKE '%corta vento%' OR LOWER(p.name) LIKE '%jaqueta%' OR LOWER(p.name) LIKE '%windbreaker%' OR LOWER(p.name) LIKE '%blusa%' OR LOWER(p.name) LIKE '%suéter%' OR LOWER(p.name) LIKE '%sweter%')",
     }
     return categories.get(category, "")
+
+
+def _old_observations_query(select_expr: str) -> str:
+    """Select/delete expired history while always retaining each SKU's latest row."""
+    where = """
+         WHERE price_history.observed_at < ?
+           AND EXISTS (
+               SELECT 1
+                 FROM price_history newer
+                WHERE newer.source = price_history.source
+                  AND newer.sku = price_history.sku
+                  AND newer.observed_at > price_history.observed_at
+           )
+    """
+    if select_expr == "DELETE":
+        return "DELETE FROM price_history" + where
+    return f"SELECT {select_expr} FROM price_history" + where
 
 
 def _bad_price_query(select_expr: str) -> str:

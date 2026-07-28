@@ -123,6 +123,8 @@ ous-monitor list --limit 100
 
 # Saúde operacional das fontes
 ous-monitor status
+ous-monitor maintain
+ous-monitor maintain --apply
 
 # Verboso (DEBUG)
 ous-monitor -v run

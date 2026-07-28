@@ -12,6 +12,13 @@ services:
       - .env
     environment:
       - DB_PATH=/app/data/prices.db
+      - AUTO_MAINTENANCE_ENABLED=true
+      - MAINTENANCE_INITIAL_DELAY_SECONDS=300
+      - MAINTENANCE_INTERVAL_HOURS=24
+      - MAINTENANCE_RETENTION_DAYS=90
+      - MAINTENANCE_RUN_RETENTION_DAYS=180
+      - MAINTENANCE_MAX_DB_MB=50
+      - MAINTENANCE_BACKUP_KEEP=7
     networks:
       - coolify
     labels:

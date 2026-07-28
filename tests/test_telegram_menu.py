@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from ous_monitor.notifier import (
@@ -11,7 +13,11 @@ from ous_monitor.notifier import (
     STORE_KEYBOARD,
     build_filter_keyboard,
 )
-from ous_monitor.server import _is_allowed_chat, get_store_status
+from ous_monitor.server import (
+    _is_allowed_chat,
+    get_store_status,
+    run_automatic_maintenance,
+)
 from ous_monitor.sources import SOURCES
 
 
@@ -90,6 +96,22 @@ class TelegramAuthorizationTests(unittest.TestCase):
     def test_missing_chat_configuration_denies_access(self):
         with patch.dict(os.environ, {}, clear=True):
             self.assertFalse(_is_allowed_chat(10))
+
+    @patch("ous_monitor.server.CatalogService.maintain")
+    def test_recent_backup_prevents_duplicate_automatic_maintenance(self, maintain):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "prices.db"
+            backup_dir = db.parent / "backups"
+            backup_dir.mkdir()
+            (backup_dir / "prices-20260728T000000.000000Z.db").touch()
+            with patch("ous_monitor.server.DEFAULT_DB", db):
+                with patch.dict(
+                    os.environ,
+                    {"MAINTENANCE_INTERVAL_HOURS": "24"},
+                    clear=True,
+                ):
+                    self.assertFalse(run_automatic_maintenance())
+        maintain.assert_not_called()
 
 
 if __name__ == "__main__":

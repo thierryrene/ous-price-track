@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,7 +8,14 @@ from unittest.mock import patch
 
 from ous_monitor.models import Product
 from ous_monitor.services import CatalogService
-from ous_monitor.storage import connect, find_changes, record_run, snapshot_promotions
+from ous_monitor.storage import (
+    connect,
+    find_changes,
+    finish_run,
+    record_run,
+    snapshot_promotions,
+    start_run,
+)
 
 
 def product(sku: str, price: float, list_price: float | None, *, name: str = "Tênis Teste") -> Product:
@@ -101,6 +109,41 @@ class StorageServicesTest(unittest.TestCase):
                 "SELECT COUNT(*) FROM products WHERE sku='bad-size'"
             ).fetchone()[0]
         self.assertEqual(remaining, 0)
+
+    def test_maintenance_backs_up_and_keeps_latest_observation_per_sku(self) -> None:
+        with connect(self.db) as conn:
+            with patch("ous_monitor.storage._now", return_value="2025-01-01T00:00:00+00:00"):
+                record_run(conn, [product("old", 100, 150)])
+                run_id = start_run(conn, mode="alert", sources=["test"])
+                finish_run(conn, run_id, status="success")
+            with patch("ous_monitor.storage._now", return_value="2025-02-01T00:00:00+00:00"):
+                record_run(conn, [product("old", 90, 150)])
+
+        backup_dir = Path(self.tmp.name) / "backups"
+        result = CatalogService(self.db).maintain(
+            retention_days=90,
+            run_retention_days=180,
+            backup_dir=backup_dir,
+            max_db_mb=50,
+            backup_keep=2,
+        )
+
+        self.assertTrue(result.backup_path.exists())
+        self.assertEqual(result.removed_observations, 1)
+        self.assertEqual(result.removed_runs, 1)
+        self.assertTrue(result.vacuumed)
+
+        with connect(self.db) as conn:
+            rows = list(conn.execute(
+                "SELECT price FROM price_history WHERE sku='old' ORDER BY observed_at"
+            ))
+        self.assertEqual([row["price"] for row in rows], [90])
+
+        with sqlite3.connect(result.backup_path) as backup:
+            count = backup.execute(
+                "SELECT COUNT(*) FROM price_history WHERE sku='old'"
+            ).fetchone()[0]
+        self.assertEqual(count, 2)
 
 
 if __name__ == "__main__":

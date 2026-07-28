@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import httpx
+from contextlib import asynccontextmanager, suppress
+from functools import partial
 from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
 
@@ -22,8 +25,6 @@ from .storage import connect, find_changes, latest_source_runs
 
 log = logging.getLogger("ous_monitor.server")
 
-app = FastAPI(title="OUS Price Monitor Webhook Bot Server")
-
 _filter_state: dict[int, dict] = {}
 
 # Carrega e inicializa o logger básico caso não tenha sido inicializado
@@ -32,6 +33,43 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     datefmt="%H:%M:%S",
 )
+# URLs da API do Telegram contêm o token; nunca permita que httpx/httpcore as
+# escrevam em logs INFO.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on", "sim"}
+
+
+def _env_positive_int(name: str, default: int) -> int:
+    try:
+        value = int(os.environ.get(name, default))
+        return value if value > 0 else default
+    except (TypeError, ValueError):
+        log.warning("%s inválido; usando %d", name, default)
+        return default
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    task = None
+    if _env_bool("AUTO_MAINTENANCE_ENABLED", True):
+        task = asyncio.create_task(_maintenance_loop())
+    try:
+        yield
+    finally:
+        if task:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+
+app = FastAPI(title="OUS Price Monitor Webhook Bot Server", lifespan=lifespan)
 
 
 def _env_csv_ints(name: str) -> set[int]:
@@ -82,6 +120,91 @@ async def _send_text(bot_token: str, chat_id: str | int, text: str, *,
             json=payload,
             timeout=10.0,
         )
+
+
+def run_automatic_maintenance() -> bool:
+    interval_hours = _env_positive_int("MAINTENANCE_INTERVAL_HOURS", 24)
+    backup_dir = DEFAULT_DB.parent / "backups"
+    backups = list(backup_dir.glob("prices-*.db")) if backup_dir.exists() else []
+    if backups:
+        newest = max(backups, key=lambda path: path.stat().st_mtime)
+        age_seconds = datetime.now(timezone.utc).timestamp() - newest.stat().st_mtime
+        if age_seconds < interval_hours * 3600:
+            log.info("Manutenção automática ainda não venceu; execução ignorada")
+            return False
+
+    result = CatalogService(DEFAULT_DB).maintain(
+        retention_days=_env_positive_int("MAINTENANCE_RETENTION_DAYS", 90),
+        run_retention_days=_env_positive_int("MAINTENANCE_RUN_RETENTION_DAYS", 180),
+        max_db_mb=_env_positive_int("MAINTENANCE_MAX_DB_MB", 50),
+        backup_keep=_env_positive_int("MAINTENANCE_BACKUP_KEEP", 7),
+    )
+    log.info(
+        "Manutenção automática concluída: observações=%d produtos_inválidos=%d "
+        "runs=%d tamanho=%d->%d backup=%s",
+        result.removed_observations,
+        result.removed_bad_products,
+        result.removed_runs,
+        result.before_bytes,
+        result.after_bytes,
+        result.backup_path.name,
+    )
+    if result.within_size_limit:
+        return True
+
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if bot_token and chat_id:
+        send_telegram_messages(
+            [
+                "⚠️ <b>Alerta de manutenção do Price Monitor</b>\n\n"
+                f"O banco permanece com {result.after_bytes / (1024 * 1024):.1f} MB "
+                f"após a compactação; limite configurado: "
+                f"{result.max_bytes / (1024 * 1024):.0f} MB."
+            ],
+            bot_token=bot_token,
+            chat_id=chat_id,
+            label="maintenance_size_warning",
+            reply_markup=MENU_KEYBOARD,
+        )
+    return True
+
+
+async def _maintenance_loop() -> None:
+    initial_delay = _env_positive_int("MAINTENANCE_INITIAL_DELAY_SECONDS", 300)
+    interval_hours = _env_positive_int("MAINTENANCE_INTERVAL_HOURS", 24)
+    await asyncio.sleep(initial_delay)
+    while True:
+        ran = False
+        try:
+            loop = asyncio.get_running_loop()
+            ran = await loop.run_in_executor(None, run_automatic_maintenance)
+        except Exception:
+            log.exception("Falha na manutenção automática do banco")
+            bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+            chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+            if bot_token and chat_id:
+                try:
+                    await loop.run_in_executor(
+                        None,
+                        partial(
+                            send_telegram_messages,
+                            [
+                                "❌ <b>Falha na manutenção automática do banco.</b>\n"
+                                "O monitor continuará funcionando, mas o banco precisa "
+                                "ser verificado."
+                            ],
+                            bot_token=bot_token,
+                            chat_id=chat_id,
+                            label="maintenance_failure",
+                            reply_markup=MENU_KEYBOARD,
+                        ),
+                    )
+                except Exception:
+                    log.exception("Falha ao enviar alerta de manutenção")
+        # Se um restart ocorreu logo após uma manutenção, confira novamente em
+        # uma hora sem criar backups duplicados; após executar, aguarde o ciclo.
+        await asyncio.sleep(interval_hours * 3600 if ran else 3600)
 
 
 def run_daily_promos_task(bot_token: str, chat_id: str, category: str = "tudo"):

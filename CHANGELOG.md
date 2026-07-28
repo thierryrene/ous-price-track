@@ -8,6 +8,12 @@ ficam em **[Não lançado]**.
 ## [Não lançado] — 2026-06-30
 
 ### Adicionado
+- **Autocuidado automático do SQLite**: no servidor, manutenção diária com
+  backup consistente, retenção de 7 cópias, limpeza de histórico/runs e
+  `VACUUM`; no GitHub Actions, workflow semanal com artifact do backup por
+  14 dias. O limite padrão é 50 MB e gera alerta no Telegram se persistir.
+- Subcomando `maintain` (dry-run por padrão; `--apply` executa backup,
+  normalização segura e compactação).
 - **Modo resumo de alta carga** no Telegram (`notifier.build_summary` +
   `categories.py`): uma linha por item agrupada por tipo de peça, com cap por
   grupo. `send_alert` resume acima de `SUMMARY_THRESHOLD` (default 15);
@@ -57,6 +63,11 @@ ficam em **[Não lançado]**.
   `run_store_scraper`, a dependência e as envs `GEMINI_API_KEY`.
 
 ### Corrigido
+- Retenção de histórico agora preserva sempre a observação mais recente de cada
+  SKU, mesmo quando ela própria tem mais de 90 dias, mantendo a referência para
+  futuras detecções de mudança.
+- Logs `INFO` de `httpx/httpcore` foram silenciados no servidor para impedir que
+  URLs da API do Telegram revelem o token do bot.
 - Allowlist do webhook agora usa `TELEGRAM_CHAT_ID` como fallback quando
   `TELEGRAM_ALLOWED_CHAT_IDS` está vazio e rejeita callbacks de fontes/filtros
   desconhecidos.
