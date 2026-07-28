@@ -203,6 +203,9 @@ Dois critérios encadeados (gênero antes de tamanho, p/ log determinístico):
    reprova calçados/roupas. Acessórios e outros itens sem grade continuam. Como
    a listagem BaW oficial não expõe tamanhos, suas roupas são rejeitadas até o
    scraper obter uma grade confiável; não abra exceção silenciosa.
+   Esse filtro é aplicado igualmente às quatro fontes Netshoes (`netshoes`,
+   `netshoes_baw`, `netshoes_adidas` e `netshoes_adidas_originals`), usando a
+   grade disponível fornecida por `SearchPage.parentSkus[].sizes`.
 
 Quando o vocabulário muda, o filtro só vale para ingestões futuras — rode
 `purge` (dry-run por padrão; `--apply` deleta em transação única, cascateando
