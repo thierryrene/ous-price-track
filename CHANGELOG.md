@@ -31,6 +31,12 @@ ficam em **[Não lançado]**.
   `MIMO.md`, `GEMINI.md` e `.github/copilot-instructions.md` viram ponteiros.
 
 ### Alterado
+- Menu do Telegram reorganizado em atalhos e submenus. O catálogo por loja e
+  seus labels agora são derivados de `sources.SOURCES`, cobrindo
+  automaticamente as 9 fontes (incluindo Converse e Netshoes BaW).
+- Promoções do dia agora usam a categorização canônica e oferecem também
+  camisas de time e agasalhos. O status lista inclusive fontes ainda sem dados,
+  e varreduras sem mudanças enviam confirmação de conclusão.
 - **Base Docker** de `mcr.microsoft.com/playwright/python:*-noble` para
   **`python:3.12-slim`** (imagem ~5× menor; deps são Python puro / wheels
   manylinux, sem navegador).
@@ -51,6 +57,9 @@ ficam em **[Não lançado]**.
   `run_store_scraper`, a dependência e as envs `GEMINI_API_KEY`.
 
 ### Corrigido
+- Allowlist do webhook agora usa `TELEGRAM_CHAT_ID` como fallback quando
+  `TELEGRAM_ALLOWED_CHAT_IDS` está vazio e rejeita callbacks de fontes/filtros
+  desconhecidos.
 - Crescimento contínuo de `data/prices.db` acima do limite de 100 MiB do
   GitHub, que impedia o workflow de persistir snapshots e concluir com sucesso.
 - Falhas do Netshoes em produção por rate-limit (429) — agora com backoff.

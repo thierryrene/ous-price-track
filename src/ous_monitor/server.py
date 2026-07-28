@@ -8,12 +8,14 @@ from fastapi.responses import JSONResponse
 
 from datetime import datetime, timezone, timedelta
 from .cli import DEFAULT_DB
+from .categories import categorize
 from .notifier import (
-    send_menu_message, API_BASE, MENU_KEYBOARD, CATEGORY_KEYBOARD, CATALOG_KEYBOARD,
-    send_digest, send_filter_menu, SOURCE_LABEL_SHORT,
+    send_menu_message, API_BASE, MENU_KEYBOARD, STORE_KEYBOARD, CATEGORY_KEYBOARD,
+    CATALOG_KEYBOARD, send_digest, send_filter_menu, SOURCE_LABEL_SHORT,
     PENDING_MESSAGES_CACHE, send_telegram_batch, MAX_MESSAGES_PER_BATCH,
     send_telegram_messages, format_error_message, format_brl, discount_intensity_emoji,
 )
+from .sources import SOURCES
 from urllib.parse import urlparse
 from .services import CatalogService, MonitorService, ProductFilters, run_exclusive
 from .storage import connect, find_changes, latest_source_runs
@@ -48,7 +50,12 @@ def _env_csv_ints(name: str) -> set[int]:
 
 def _is_allowed_chat(chat_id: int | str) -> bool:
     allowed = _env_csv_ints("TELEGRAM_ALLOWED_CHAT_IDS")
-    return not allowed or int(chat_id) in allowed
+    if not allowed:
+        allowed = _env_csv_ints("TELEGRAM_CHAT_ID")
+    try:
+        return bool(allowed) and int(chat_id) in allowed
+    except (TypeError, ValueError):
+        return False
 
 
 def _check_webhook_secret(request: Request) -> bool:
@@ -81,7 +88,9 @@ def run_daily_promos_task(bot_token: str, chat_id: str, category: str = "tudo"):
     """Lê do banco o que entrou em promoção nas últimas 24h e filtra por categoria."""
     cat_labels = {
         "tenis": "Tênis/Calçados",
-        "vestuario": "Vestuário",
+        "vestuario": "Roupas em Geral",
+        "camisas_time": "Camisas de Time",
+        "agasalhos": "Agasalhos",
         "acessorios": "Acessórios",
         "tudo": "Todas as Peças",
         "50off": "Acima de 50% OFF",
@@ -113,20 +122,21 @@ def run_daily_promos_task(bot_token: str, chat_id: str, category: str = "tudo"):
         filtered_promos = []
         
         for row in new_promos:
-            name_lower = row["name"].lower()
             price = row["price"]
             list_price = row["list_price"]
+            product_category = categorize(row["name"])
             
             if category == "tenis":
-                if "tênis" in name_lower or "tenis" in name_lower or "chinelo" in name_lower:
+                if product_category == "tenis":
                     filtered_promos.append(row)
             elif category == "vestuario":
-                vest_keywords = ["camiseta", "camisa", "moletom", "jaqueta", "calça", "calca", "bermuda", "short", "meia"]
-                if any(kw in name_lower for kw in vest_keywords):
+                if product_category in {"vestuario", "camisas_time", "agasalhos"}:
                     filtered_promos.append(row)
             elif category == "acessorios":
-                acess_keywords = ["boné", "bone", "gorro", "mochila", "shoulder", "bag", "cinto", "cadarço", "carteira", "óculos", "oculos"]
-                if any(kw in name_lower for kw in acess_keywords):
+                if product_category == "acessorios":
+                    filtered_promos.append(row)
+            elif category in {"camisas_time", "agasalhos"}:
+                if product_category == category:
                     filtered_promos.append(row)
             elif category == "50off":
                 if list_price and price:
@@ -230,14 +240,32 @@ def run_scraper_task(sources: list[str] | None, is_snapshot: bool, bot_token: st
         except Exception:
             log.exception("Falha ao atualizar dashboard após tarefa do bot")
 
-        if result.scrape.failed:
+        failed_labels = [
+            SOURCE_LABEL_SHORT.get(source, source)
+            for source in result.scrape.failed
+        ]
+        if failed_labels:
             log.warning("Scraper finalizou com falhas: %s", ", ".join(result.scrape.failed))
-        if not result.scrape.products:
+
+        completion = None
+        if is_snapshot and not result.total_promotions:
+            completion = "✅ <b>Snapshot concluído.</b>\nNenhuma promoção ativa foi encontrada."
+        elif not is_snapshot and not result.total_changes:
+            completion = (
+                "✅ <b>Varredura concluída.</b>\n"
+                "Nenhuma mudança de preço ou promoção foi encontrada."
+            )
+
+        if failed_labels:
+            warning = "⚠️ Falha em: " + ", ".join(failed_labels) + "."
+            completion = f"{completion}\n\n{warning}" if completion else warning
+
+        if completion:
             send_telegram_messages(
-                ["Nenhum produto coletado nesta varredura."],
+                [completion],
                 bot_token=bot_token,
                 chat_id=chat_id,
-                label="scraper_empty",
+                label="scraper_completion",
                 reply_markup=MENU_KEYBOARD,
             )
     except Exception as e:
@@ -372,17 +400,20 @@ def run_filtered_task(source: str, filters: dict, bot_token: str, chat_id: str):
 def get_store_status() -> str:
     """Get status of each store from the database."""
     try:
-        sources = CatalogService(DEFAULT_DB).store_status()
-
-        if not sources:
-            return "📊 <b>Nenhum dado no banco de dados.</b>"
+        status_by_source = {
+            row["source"]: row
+            for row in CatalogService(DEFAULT_DB).store_status()
+        }
 
         lines = ["📊 <b>Status das Lojas</b>", ""]
-        for row in sources:
-            source = row["source"]
+        for source in SOURCES:
+            row = status_by_source.get(source)
+            src_label = SOURCE_LABEL_SHORT[source]
+            if row is None:
+                lines.append(f"{src_label}: <i>sem dados coletados</i>")
+                continue
             products = row["products"]
             newest = row["newest"][:16] if row["newest"] else "N/A"
-            src_label = SOURCE_LABEL_SHORT.get(source, source)
             lines.append(f"{src_label}: <b>{products}</b> produtos (última: {newest})")
 
         return "\n".join(lines)
@@ -639,6 +670,18 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             _filter_state.pop(chat_id, None)
             return JSONResponse({"status": "menu_sent"})
 
+        if callback_data == "stores:menu":
+            _filter_state.pop(chat_id, None)
+            await _send_text(
+                bot_token,
+                chat_id,
+                "🛍️ <b>Catálogo por Loja</b>\n\n"
+                "Escolha uma loja, ajuste os filtros e rode a varredura. "
+                "Todas as fontes cadastradas aparecem aqui.",
+                reply_markup=STORE_KEYBOARD,
+            )
+            return JSONResponse({"status": "store_menu_sent"})
+
         if callback_data == "load:more":
             pending = PENDING_MESSAGES_CACHE.pop(chat_id, None)
             if not pending:
@@ -703,9 +746,22 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
 
         if callback_data.startswith("filter:"):
             parts = callback_data.split(":")
+            if len(parts) < 3:
+                return JSONResponse({"status": "invalid_filter_callback"}, status_code=400)
             source = parts[1]
             action = parts[2]
             value = parts[3] if len(parts) > 3 else None
+            valid_values = {
+                "cat": {"tenis", "vestuario", "acessorios", "camisas_time", "agasalhos", "all"},
+                "price": {"100", "200", "500", "all"},
+                "disc": {"50", "30", "all"},
+            }
+            if source not in SOURCES:
+                return JSONResponse({"status": "unknown_source"}, status_code=400)
+            if action not in ({"run"} | set(valid_values)):
+                return JSONResponse({"status": "invalid_filter_action"}, status_code=400)
+            if action != "run" and value not in valid_values[action]:
+                return JSONResponse({"status": "invalid_filter_value"}, status_code=400)
 
             state = _filter_state.get(chat_id)
             if not state or state.get("source") != source:
@@ -889,12 +945,20 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             return JSONResponse({"status": "category_menu_sent"})
         elif callback_data.startswith("run:daily_promos:"):
             category = callback_data.split(":")[-1]
+            valid_categories = {
+                "tenis", "vestuario", "acessorios", "camisas_time",
+                "agasalhos", "tudo", "50off", "ate100",
+            }
+            if category not in valid_categories:
+                return JSONResponse({"status": "unknown_daily_category"}, status_code=400)
             background_tasks.add_task(run_daily_promos_task, bot_token, str(chat_id), category)
             return JSONResponse({"status": "daily_task_queued"})
         elif callback_data.startswith("run:"):
             action = callback_data.split(":")[1]
             if action == "all":
                 pass  # sources = None → all
+            elif action not in SOURCES:
+                return JSONResponse({"status": "unknown_source"}, status_code=400)
             else:
                 # Intercept brand click → show filter menu instead of running directly
                 _filter_state[chat_id] = {

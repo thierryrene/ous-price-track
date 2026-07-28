@@ -210,6 +210,13 @@ Quando o vocabulário muda, o filtro só vale para ingestões futuras — rode
 `--dry-run-telegram` formata e loga sem enviar; `--no-telegram` pula. Falhas no
 notifier nunca abortam o run.
 
+O menu principal dá acesso a promoções do dia, atualização/snapshot, status,
+estatísticas e manutenção. O submenu **Catálogo por Loja** é gerado diretamente
+de `sources.SOURCES`: toda fonte cadastrada aparece automaticamente e abre os
+filtros de categoria, preço e desconto antes da varredura. Não mantenha listas
+paralelas de lojas no notifier. Varreduras sem mudanças também enviam uma
+confirmação de conclusão ao chat.
+
 **Modo resumo (alta carga).** Para não inundar o chat, `send_alert`/`send_digest`
 podem emitir um resumo via `build_summary()`: **uma linha por item**
 (`{intensidade} -{pct}% {preço} {nome} ⟵ {preço cheio}`), agrupado por **tipo de

@@ -41,6 +41,7 @@ __all__ = [
     "PENDING_MESSAGES_CACHE",
     "TelegramConfigError",
     "MENU_KEYBOARD",
+    "STORE_KEYBOARD",
     "CATEGORY_KEYBOARD",
     "CATALOG_KEYBOARD",
     "SOURCE_LABEL_SHORT",
@@ -53,6 +54,7 @@ __all__ = [
     "build_summary",
     "send_telegram_batch",
     "send_telegram_messages",
+    "build_store_keyboard",
     "build_filter_keyboard",
     "build_filter_message",
     "send_filter_menu",
@@ -429,34 +431,49 @@ def _resolve_creds(bot_token, chat_id, dry_run):
     return bot_token, chat_id
 
 
-# Teclado Inline padrão com as ações de monitoramento
+# Menu principal: atalhos de uso frequente e acesso aos submenus.
 MENU_KEYBOARD = {
     "inline_keyboard": [
         [
-            {"text": "🟧 OUS", "callback_data": "run:ous"},
-            {"text": "🟦 Netshoes", "callback_data": "run:netshoes"},
+            {"text": "🛍️ Catálogo por Loja", "callback_data": "stores:menu"},
         ],
         [
-            {"text": "⚫ BaW", "callback_data": "run:baw"},
-            {"text": f"{SOURCES['umbro'].emoji} Umbro", "callback_data": "run:umbro"},
-            {"text": "🔴 Approve", "callback_data": "run:approve"},
+            {"text": "🌟 Promoções de Hoje", "callback_data": "run:daily_promos"},
+            {"text": "📈 Top Descontos", "callback_data": "catalog:top_discounts"},
         ],
         [
-            {"text": "🟢 Adidas", "callback_data": "run:netshoes_adidas"},
-            {"text": "🔵 Adidas Org.", "callback_data": "run:netshoes_adidas_originals"},
-        ],
-        [
-            {"text": "🔄 Rodar Todas", "callback_data": "run:all"},
+            {"text": "🔄 Atualizar Todas", "callback_data": "run:all"},
             {"text": "📊 Snapshot Geral", "callback_data": "run:snapshot"},
         ],
         [
-            {"text": "🌟 Promoções de Hoje", "callback_data": "run:daily_promos"}
+            {"text": "📊 Status das Lojas", "callback_data": "catalog:status"},
+            {"text": "🗄️ Estatísticas", "callback_data": "catalog:db_stats"},
         ],
         [
-            {"text": "⚙️ Gerenciar Catálogo", "callback_data": "catalog:menu"}
+            {"text": "⚙️ Manutenção", "callback_data": "catalog:menu"},
         ]
     ]
 }
+
+
+def build_store_keyboard() -> dict:
+    """Build the per-store catalog menu from the canonical source registry."""
+    buttons = [
+        {
+            "text": f"{config.emoji} {config.label}",
+            "callback_data": f"run:{key}",
+        }
+        for key, config in SOURCES.items()
+    ]
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    rows.append([
+        {"text": "🔄 Atualizar Todas", "callback_data": "run:all"},
+        {"text": "🔙 Voltar", "callback_data": "run:back"},
+    ])
+    return {"inline_keyboard": rows}
+
+
+STORE_KEYBOARD = build_store_keyboard()
 
 
 CATALOG_KEYBOARD = {
@@ -575,7 +592,11 @@ CATEGORY_KEYBOARD = {
     "inline_keyboard": [
         [
             {"text": "👟 Tênis/Calçados", "callback_data": "run:daily_promos:tenis"},
-            {"text": "👕 Vestuário", "callback_data": "run:daily_promos:vestuario"}
+            {"text": "👕 Roupas em Geral", "callback_data": "run:daily_promos:vestuario"}
+        ],
+        [
+            {"text": "⚽ Camisas de Time", "callback_data": "run:daily_promos:camisas_time"},
+            {"text": "🧥 Agasalhos", "callback_data": "run:daily_promos:agasalhos"}
         ],
         [
             {"text": "🧢 Acessórios", "callback_data": "run:daily_promos:acessorios"},
@@ -592,13 +613,8 @@ CATEGORY_KEYBOARD = {
 }
 
 SOURCE_LABEL_SHORT = {
-    "ous": "🟧 OUS",
-    "netshoes": "🟦 Netshoes",
-    "baw": "⚫ BaW",
-    "netshoes_baw": "🟪 Netshoes BaW",
-    "netshoes_adidas": "🟢 Adidas",
-    "netshoes_adidas_originals": "🔵 Adidas Org.",
-    "approve": "🔴 Approve",
+    key: f"{config.emoji} {config.label}"
+    for key, config in SOURCES.items()
 }
 
 CATEGORY_OPTIONS = [
@@ -676,7 +692,7 @@ def build_filter_keyboard(source: str, filters: dict) -> dict:
     # Action row
     rows.append([
         {"text": "🔄 Rodar Varredura", "callback_data": f"filter:{source}:run"},
-        {"text": "🔙 Voltar", "callback_data": "run:back"},
+        {"text": "🔙 Lojas", "callback_data": "stores:menu"},
     ])
 
     return {"inline_keyboard": rows}
