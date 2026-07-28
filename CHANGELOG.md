@@ -36,6 +36,9 @@ ficam em **[Não lançado]**.
 - **Registro de fontes unificado** em `sources.py` (`SOURCES`/`SourceConfig`),
   consumido por CLI, bot, server e dashboard.
 - Storage com hardening: WAL, `busy_timeout`, `foreign_keys`, dedup de SKU.
+- O histórico de preços passa a gravar somente produtos novos ou observações
+  realmente alteradas. Produtos inalterados continuam atualizando `last_seen`,
+  evitando que o SQLite cresça milhares de linhas por execução.
 
 ### Removido
 - **Fonte Centauro** (e o scraper Playwright) — bloqueio agressivo do Akamai a
@@ -45,6 +48,8 @@ ficam em **[Não lançado]**.
   `run_store_scraper`, a dependência e as envs `GEMINI_API_KEY`.
 
 ### Corrigido
+- Crescimento contínuo de `data/prices.db` acima do limite de 100 MiB do
+  GitHub, que impedia o workflow de persistir snapshots e concluir com sucesso.
 - Falhas do Netshoes em produção por rate-limit (429) — agora com backoff.
 - `approve` marcada `run_in_ci=False` (registro condizente com o cron).
 - Marcador de conflito órfão (`<<<<<<< HEAD`) que vazou para o `main` num merge.

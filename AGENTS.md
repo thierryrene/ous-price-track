@@ -98,7 +98,9 @@ Tudo sob `src/ous_monitor/`:
    list[Product]`. Cada um **pagina por completo** (ver Contrato de paginação).
 3. **Storage** (`storage.py`) — SQLite com `products`, `price_history`, `runs` e
    `source_runs`. `record_run()` faz upsert dos produtos, anexa observação
-   ligada a `run_id`, **deduplica SKUs repetidos** e devolve contadores.
+   ligada a `run_id` **somente para produtos novos ou com preço,
+   disponibilidade, tamanhos ou estoque alterados**, deduplica SKUs repetidos
+   e devolve contadores. `last_seen` é atualizado em toda coleta.
    `find_changes()` usa window functions (`LAG`) para detectar 4 categorias
    mutuamente exclusivas (ver abaixo). Pragmas: WAL, `busy_timeout`,
    `foreign_keys`. Run-tracking: `start_run`/`finish_run`/`record_source_run`/

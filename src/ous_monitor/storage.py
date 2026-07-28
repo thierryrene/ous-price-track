@@ -212,7 +212,8 @@ def record_run(
         )
         rows = conn.execute(
             """
-            SELECT ph.source, ph.sku, ph.list_price, ph.price, ph.available, ph.observed_at
+            SELECT ph.source, ph.sku, ph.list_price, ph.price, ph.available,
+                   ph.sizes, ph.stock_qty, ph.observed_at
               FROM price_history ph
               JOIN _record_run_keys rk
                 ON rk.source = ph.source
@@ -254,18 +255,27 @@ def record_run(
             )
             counters["updated"] += 1
 
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO price_history
-                (source, sku, observed_at, run_id, list_price, price, available, sizes, stock_qty)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                p.source, p.sku, now, run_id, p.list_price, p.price, int(p.available),
-                ",".join(p.sizes) if p.sizes else None,
-                p.stock_qty,
-            ),
+        sizes = ",".join(p.sizes) if p.sizes else None
+        observation_changed = (
+            prev is None
+            or prev["list_price"] != p.list_price
+            or prev["price"] != p.price
+            or prev["available"] != int(p.available)
+            or prev["sizes"] != sizes
+            or prev["stock_qty"] != p.stock_qty
         )
+        if observation_changed:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO price_history
+                    (source, sku, observed_at, run_id, list_price, price, available, sizes, stock_qty)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    p.source, p.sku, now, run_id, p.list_price, p.price,
+                    int(p.available), sizes, p.stock_qty,
+                ),
+            )
 
         if prev is not None:
             if p.price < prev["price"]:

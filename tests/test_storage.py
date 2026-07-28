@@ -70,6 +70,46 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(rows[0]["source"], "test")
             self.assertEqual(rows[0]["kept_count"], 1)
 
+    def test_record_run_skips_unchanged_history_but_updates_last_seen(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "prices.db"
+            with connect(db) as conn:
+                record_run(conn, [product(90, 120)])
+                first_seen = conn.execute(
+                    "SELECT last_seen FROM products WHERE source='test' AND sku='sku-1'"
+                ).fetchone()["last_seen"]
+
+            time.sleep(0.01)
+            with connect(db) as conn:
+                record_run(conn, [product(90, 120)])
+                row = conn.execute(
+                    "SELECT last_seen FROM products WHERE source='test' AND sku='sku-1'"
+                ).fetchone()
+                observations = conn.execute(
+                    "SELECT COUNT(*) FROM price_history"
+                ).fetchone()[0]
+
+            self.assertGreater(row["last_seen"], first_seen)
+            self.assertEqual(observations, 1)
+
+    def test_record_run_keeps_real_observation_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "prices.db"
+            with connect(db) as conn:
+                record_run(conn, [product(90, 120)])
+
+            time.sleep(0.01)
+            with connect(db) as conn:
+                record_run(conn, [product(80, 120)])
+                prices = [
+                    row["price"]
+                    for row in conn.execute(
+                        "SELECT price FROM price_history ORDER BY observed_at"
+                    )
+                ]
+
+            self.assertEqual(prices, [90, 80])
+
     def test_find_changes_detects_new_promo(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "prices.db"
