@@ -11,6 +11,13 @@ class SourceRegistryTests(unittest.TestCase):
         self.assertIn("umbro", ci_source_keys())
         self.assertEqual(dashboard_source_config()["umbro"]["label"], "Umbro Oficial")
 
+    def test_converse_is_registered_for_ci_and_dashboard(self):
+        self.assertIn("converse", SOURCES)
+        self.assertIn("converse", ci_source_keys())
+        self.assertEqual(
+            dashboard_source_config()["converse"]["label"], "Converse Sale"
+        )
+
     def test_centauro_is_removed(self):
         self.assertNotIn("centauro", SOURCES)
 

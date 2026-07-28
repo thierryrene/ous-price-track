@@ -18,7 +18,8 @@ ficam em **[Não lançado]**.
 - **Run-tracking** no storage: tabelas `runs`/`source_runs`, coluna `run_id`,
   funções `start_run`/`finish_run`/`record_source_run`/`latest_source_runs`;
   subcomando CLI `status` e endpoint `/status`.
-- **Fontes** `umbro` (outlet VTEX) e `approve` (Tiendanube, só on-demand).
+- **Fontes** `umbro` (outlet VTEX), `converse` (Sale Magento 2 com tamanhos
+  saláveis por cor) e `approve` (Tiendanube, só on-demand).
 - **Backoff** exponencial no scraper Netshoes para HTTP 429/503 (respeita
   `Retry-After`) — `scrapers/netshoes.py:_get_with_retry`.
 - **Suíte de testes** em `tests/` (storage, sources, filters, summary, netshoes
@@ -39,6 +40,8 @@ ficam em **[Não lançado]**.
 - O histórico de preços passa a gravar somente produtos novos ou observações
   realmente alteradas. Produtos inalterados continuam atualizando `last_seen`,
   evitando que o SQLite cresça milhares de linhas por execução.
+- O filtro de tamanho agora é estrito: calçados exigem 42/43; roupas exigem
+  M/G/GG; acessórios continuam independentes de grade.
 
 ### Removido
 - **Fonte Centauro** (e o scraper Playwright) — bloqueio agressivo do Akamai a

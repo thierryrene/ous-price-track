@@ -1,8 +1,8 @@
 # ous-price-monitor
 
 Monitor diário de promoções das marcas **ÖUS**, **BaW Clothing**, **Adidas**,
-**Umbro** e **Approve** (Adidas só no Clube Netshoes). Varre 8 fontes (7 no cron
-diário + Approve on-demand), guarda histórico de preços em
+**Umbro**, **Converse** e **Approve** (Adidas só no Clube Netshoes). Varre 9
+fontes (8 no cron diário + Approve on-demand), guarda histórico de preços em
 SQLite e relata produtos que **entraram em promoção** desde a última execução.
 
 ## Fontes
@@ -11,6 +11,7 @@ SQLite e relata produtos que **entraram em promoção** desde a última execuç�
 |---|---|---|---|
 | `ous` | `ous.com.br/garimpo` (outlet oficial) | API VTEX pública (`catalog_system/pub/products/search`) | ✅ ~144 produtos |
 | `umbro` | `umbro.com.br/outlet` (outlet oficial) | API VTEX pública (`catalog_system/pub/products/search`, coleção `921`) | ✅ ~889 produtos |
+| `converse` | `converse.com.br/sale-c` | HTML SSR Magento 2 + `jsonConfig` dos swatches; 6 páginas, preços e tamanhos saláveis por cor | ✅ ~216 produtos |
 | `netshoes` | `clube.netshoes.com.br/busca?q=ous&marca=ous` (preço de assinante) | HTML + parse de `window.__INITIAL_STATE__` | ✅ ~204 produtos |
 | `baw` | `bawclothing.com.br/roupas/?pagina=N&tamanho=24` (catálogo completo) | HTML SSR Wake/FBits — combina JSON-LD `ItemList` com dataLayer `Hotsite products` (match por item_id no slug) | ✅ ~587 produtos |
 | `netshoes_baw` | `clube.netshoes.com.br/busca?marca=baw-clothing` | Mesma estratégia da fonte `netshoes`, filtrando por marca BaW Clothing | ✅ ~50 produtos |
@@ -73,8 +74,8 @@ A classificação de tipo de peça vive em [src/ous_monitor/categories.py](src/o
 Há ainda o subcomando **`snapshot`** (workflow `snapshot.yml`, só manual):
 roda os scrapers e envia um digest com **todos os produtos atualmente em
 promoção** — útil pra "varrer o catálogo agora" sem esperar pelo cron.
-Mantém o filtro de tamanhos 42/43, mas ignora o filtro "já notifiquei isso
-no run anterior".
+Mantém o filtro de calçados 42/43 e roupas M/G/GG, mas ignora o filtro
+"já notifiquei isso no run anterior".
 
 Como obter as credenciais:
 
@@ -176,7 +177,8 @@ Setup único:
 4. Dispare manualmente no GitHub: `Actions → monitor → Run workflow`.
 
 **Approve não é executada no Actions por padrão.** O workflow roda as fontes
-`ous umbro netshoes baw netshoes_baw netshoes_adidas netshoes_adidas_originals`.
+`ous umbro converse netshoes baw netshoes_baw netshoes_adidas
+netshoes_adidas_originals`.
 Para incluir a Approve, rode local/VPS ou use o bot on-demand no servidor.
 
 ### Cron local (alternativa)

@@ -10,13 +10,13 @@ divergência entre docs que já causou um merge gigante neste projeto).
 ## Projeto
 
 Monitor diário de promoções de streetwear/calçado: **ÖUS**, **BaW Clothing**,
-**Adidas**, **Umbro** e **Approve**. Raspa cada marca da loja própria (quando
+**Adidas**, **Umbro**, **Converse** e **Approve**. Raspa cada marca da loja própria (quando
 aplicável) + retailers marketplace, guarda histórico de preços em SQLite,
 detecta o que mudou, notifica via Telegram e gera um dashboard HTML. Roda no
 GitHub Actions 2×/dia; um servidor FastAPI (Coolify) serve o bot do Telegram
 (orientado a botões) e ações on-demand.
 
-### Fontes ativas (8)
+### Fontes ativas (9)
 
 Definidas **uma única vez** em [`src/ous_monitor/sources.py`](src/ous_monitor/sources.py)
 (`SOURCES`), consumidas por CLI, labels/botões do Telegram, validação do server
@@ -26,6 +26,7 @@ e config do dashboard.
 |---|---|---|---|
 | `ous` | ous.com.br/garimpo | ÖUS | API VTEX pública |
 | `umbro` | umbro.com.br/outlet | Umbro | API VTEX (coleção 921), ~889 itens |
+| `converse` | converse.com.br/sale-c | Converse | HTML SSR Magento 2 + swatches, ~216 itens |
 | `netshoes` | clube.netshoes.com.br | ÖUS | HTML + `__INITIAL_STATE__`, preços em centavos |
 | `baw` | bawclothing.com.br | BaW | HTML SSR Wake/FBits (JSON-LD + dataLayer) |
 | `netshoes_baw` | clube.netshoes.com.br | BaW | mesma do `netshoes`, `marca=baw-clothing` |
@@ -37,7 +38,7 @@ Cada par (loja, marca) é uma source distinta — não há coluna `brand` no DB;
 segrega marca dentro do mesmo retailer é o `source_name`. `NetshoesScraper` é
 parametrizado por marca; `NetshoesBawScraper` / `NetshoesAdidasScraper` /
 `NetshoesAdidasOriginalsScraper` são factories que devolvem instâncias
-configuradas. O cron diário roda as 7 fontes com `run_in_ci=True`
+configuradas. O cron diário roda as 8 fontes com `run_in_ci=True`
 (`ci_source_keys()`); `approve` fica de fora e é acionada pelo bot.
 
 > **Não reintroduza Centauro nem o agente de IA "AGY"/google-antigravity** —
@@ -150,6 +151,8 @@ declarado pelo servidor na 1ª página e segue até esgotar.
 - **BaW**: JSON-LD `ItemList.numberOfItems` declara o total; loop
   `?pagina=N&tamanho=24`. **Pegadinha**: só `?pagina=N` é ignorado e devolve a
   pg 1 — precisa de `tamanho` junto. ~25 págs.
+- **Converse**: `.toolbar-number` declara o total; 36 produtos por página e
+  paginação Magento via `?p=N`. A categoria Sale tem ~216 itens/~6 páginas.
 
 ## Gotchas por site
 
@@ -173,6 +176,10 @@ declarado pelo servidor na 1ª página e segue até esgotar.
   não %** → `list_price = price + discount`. **Não** peça `br` em
   `Accept-Encoding` (httpx só decodifica brotli com pacote extra) — use
   `gzip, deflate`.
+- **Converse**: Magento 2 SSR. O card traz SKU/preços e cada bloco
+  `Magento_Swatches/js/swatch-renderer` traz `jsonConfig.index` + `salable`.
+  Cruze a cor selecionada (`childColorIdPlp`) com os variants saláveis antes
+  de mapear o atributo `size`; não use a união de cores indisponíveis.
 
 ## Filtros de ingestão
 
@@ -186,9 +193,11 @@ Dois critérios encadeados (gênero antes de tamanho, p/ log determinístico):
 1. **Gênero/idade** (`gender.is_male_or_unisex`) — rejeita token feminino-
    exclusivo, infantil/juvenil, maternidade ou categoria feminina exclusiva.
    Sem marcador → aceita (unissex). Vocabulário em `gender.py`.
-2. **Tamanho 42/43** (`passes_size_filter`) — só atua em itens com `\btênis\b`
-   no nome. Tênis com `sizes` precisa ter `"42"`/`"43"`; tênis sem `sizes` (BaW)
-   passa direto.
+2. **Grade estrita** (`passes_size_filter`) — calçados precisam ter `"42"` ou
+   `"43"` disponível; roupas precisam ter `"M"`, `"G"` ou `"GG"`. Grade vazia
+   reprova calçados/roupas. Acessórios e outros itens sem grade continuam. Como
+   a listagem BaW oficial não expõe tamanhos, suas roupas são rejeitadas até o
+   scraper obter uma grade confiável; não abra exceção silenciosa.
 
 Quando o vocabulário muda, o filtro só vale para ingestões futuras — rode
 `purge` (dry-run por padrão; `--apply` deleta em transação única, cascateando
@@ -229,7 +238,7 @@ há chat com IA). Variáveis:
 - **Docker:** base `python:3.12-slim` (Debian). Todas as deps são Python puro /
   wheels manylinux — sem navegador. `CMD` sobe `uvicorn ous_monitor.server:app`.
 - **GitHub Actions** (`.github/workflows/monitor.yml`): 2×/dia, instala só
-  `httpx`+`selectolax`, roda as 7 fontes de CI e commita o `data/prices.db`
+  `httpx`+`selectolax`, roda as 8 fontes de CI e commita o `data/prices.db`
   atualizado (estado entre execuções). `snapshot.yml` é manual.
 - **Coolify/VPS:** Docker Compose + Traefik; bind-mount `./data:/app/data`.
 

@@ -15,8 +15,16 @@ class FilterTests(unittest.TestCase):
         self.assertEqual(should_keep("Tênis Umbro Speciali", ["40", "41"]), (False, "size"))
         self.assertEqual(should_keep("Tênis Umbro Speciali", ["41", "42"]), (True, ""))
 
-    def test_tenis_without_sizes_is_kept(self):
-        self.assertEqual(should_keep("Tênis OUS Imigrante", []), (True, ""))
+    def test_tenis_without_sizes_is_rejected(self):
+        self.assertEqual(should_keep("Tênis OUS Imigrante", []), (False, "size"))
+
+    def test_clothing_requires_m_g_or_gg(self):
+        self.assertEqual(should_keep("Camiseta OUS Masculina", ["P"]), (False, "size"))
+        self.assertEqual(should_keep("Camiseta OUS Masculina", ["P", "M"]), (True, ""))
+        self.assertEqual(should_keep("Moletom OUS Unissex", ["GG"]), (True, ""))
+
+    def test_accessory_does_not_require_size(self):
+        self.assertEqual(should_keep("Boné OUS Masculino", []), (True, ""))
 
 
 if __name__ == "__main__":

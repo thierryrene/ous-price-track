@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List
 
 from .scrapers.baw import BawScraper
+from .scrapers.converse import ConverseScraper
 from .scrapers.netshoes import (
     NetshoesAdidasOriginalsScraper,
     NetshoesAdidasScraper,
@@ -90,6 +91,15 @@ SOURCES: Dict[str, SourceConfig] = {
         color="#00a3e0",
         bg="rgba(0, 163, 224, 0.15)",
         border="#00a3e0",
+    ),
+    "converse": SourceConfig(
+        key="converse",
+        label="Converse Sale",
+        emoji="⭐",
+        scraper_factory=ConverseScraper,
+        color="#f5f5f5",
+        bg="rgba(245, 245, 245, 0.12)",
+        border="#d8d8d8",
     ),
     "approve": SourceConfig(
         key="approve",

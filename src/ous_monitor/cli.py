@@ -9,8 +9,8 @@ Subcomandos:
   list       — lista todos os produtos atualmente em promoção (snapshot mais recente)
   purge      — remove do DB produtos que falham os filtros (default dry-run)
 
-Filtros de ingestão (gênero/idade + tênis 42/43) vivem em `filters.py` e são
-aplicados em `_scrape_and_persist`. O DB é considerado fonte da verdade — o
+Filtros de ingestão (gênero/idade + calçados 42/43 + roupas M/G/GG) vivem em
+`filters.py` e são aplicados em `_scrape_and_persist`. O DB é considerado fonte da verdade — o
 notifier não filtra mais nada.
 """
 from __future__ import annotations
@@ -211,8 +211,9 @@ def cmd_report(args: argparse.Namespace) -> int:
 
 
 def cmd_purge(args: argparse.Namespace) -> int:
-    """Remove do DB produtos que não passam pelos filtros atuais (gênero/idade
-    e tênis 42/43), usando a última observação registrada como referência.
+    """Remove do DB produtos que não passam pelos filtros atuais (gênero/idade,
+    calçados 42/43 e roupas M/G/GG), usando a última observação registrada como
+    referência.
 
     Default é dry-run; passar --apply faz a deleção em transação única.
     """
@@ -231,7 +232,7 @@ def cmd_purge(args: argparse.Namespace) -> int:
 
     mode = "APLICANDO" if args.apply else "Dry-run (use --apply pra executar)"
     print(f"=== Purge — {mode} ===")
-    print("Critérios: gênero/idade + tênis 42/43 (filtros.py)\n")
+    print("Critérios: gênero/idade + calçados 42/43 + roupas M/G/GG (filters.py)\n")
     print("Por source:")
     for s in sorted(by_src):
         g = sum(1 for d in to_drop if d.source == s and d.reason == "gender")
@@ -350,8 +351,9 @@ def main(argv: list[str] | None = None) -> int:
 
     p_purge = sub.add_parser(
         "purge",
-        help="remove do DB produtos que falham os filtros de gênero/idade "
-             "ou tênis 42/43. Default é dry-run; passe --apply para deletar.",
+        help="remove do DB produtos que falham os filtros de gênero/idade, "
+             "calçados 42/43 ou roupas M/G/GG. Default é dry-run; "
+             "passe --apply para deletar.",
     )
     p_purge.add_argument("--apply", action="store_true",
                          help="executa a deleção (caso contrário só mostra).")
