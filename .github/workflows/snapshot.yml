@@ -3,8 +3,8 @@ name: snapshot
 # Disparado MANUALMENTE via Actions → snapshot → Run workflow.
 # Diferente de `monitor`: ignora o filtro "já notificou" e envia digest com
 # TODOS os produtos atualmente em promoção (mantém filtro de tamanhos 42/43).
-on:
-  workflow_dispatch: {}
+# DESATIVADO: snapshots são executados pelo servidor/Coolify.
+on: workflow_dispatch
 
 # Compartilha lock com `monitor` pra evitar push concorrente do data/prices.db.
 concurrency:
@@ -16,6 +16,7 @@ permissions:
 
 jobs:
   snapshot:
+    if: ${{ false }}
     runs-on: ubuntu-latest
     # Adidas Netshoes sozinho leva ~4min (164 páginas × 1.5s) — 20min dá margem.
     timeout-minutes: 20

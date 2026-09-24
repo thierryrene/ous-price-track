@@ -1,10 +1,7 @@
 name: database-maintenance
 
-on:
-  schedule:
-    # Domingo, 10:00 UTC (07:00 BRT), fora das janelas de scraping.
-    - cron: "0 10 * * 0"
-  workflow_dispatch:
+# DESATIVADO: a manutenção diária roda no servidor/Coolify.
+on: workflow_dispatch
 
 concurrency:
   group: monitor
@@ -15,6 +12,7 @@ permissions:
 
 jobs:
   maintain:
+    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

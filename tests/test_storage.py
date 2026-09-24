@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import time
 import unittest
@@ -12,8 +13,10 @@ from ous_monitor.storage import (
     find_changes,
     finish_run,
     latest_source_runs,
+    load_bot_session,
     record_run,
     record_source_run,
+    save_bot_session,
     start_run,
 )
 
@@ -34,6 +37,25 @@ def product(price: float, list_price: float | None = None) -> Product:
 
 
 class StorageTests(unittest.TestCase):
+    def test_bot_session_survives_new_database_connection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "prices.db"
+            state = {
+                "source": "ous",
+                "category": "tenis",
+                "max_price": "200",
+                "min_discount": "30",
+            }
+            with connect(db) as conn:
+                save_bot_session(conn, 123, state, ui_message_id=77)
+
+            with connect(db) as conn:
+                restored = load_bot_session(conn, "123")
+
+            self.assertEqual(restored["source"], "ous")
+            self.assertEqual(restored["category"], "tenis")
+            self.assertEqual(restored["ui_message_id"], 77)
+
     def test_record_run_deduplicates_products_and_links_run_id(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "prices.db"
@@ -47,6 +69,10 @@ class StorageTests(unittest.TestCase):
                 row = conn.execute("SELECT run_id, price FROM price_history").fetchone()
                 self.assertEqual(row["run_id"], run_id)
                 self.assertEqual(row["price"], 90)
+                seen_run = conn.execute(
+                    "SELECT last_seen_run_id FROM products"
+                ).fetchone()[0]
+                self.assertEqual(seen_run, run_id)
 
     def test_source_run_status_is_queryable(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -91,6 +117,61 @@ class StorageTests(unittest.TestCase):
 
             self.assertGreater(row["last_seen"], first_seen)
             self.assertEqual(observations, 1)
+
+    def test_migration_backfills_last_seen_run_id_from_prior_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "prices.db"
+            conn = sqlite3.connect(db)
+            conn.executescript("""
+                CREATE TABLE products (
+                    source TEXT NOT NULL, sku TEXT NOT NULL, name TEXT NOT NULL,
+                    url TEXT NOT NULL, image TEXT, brand TEXT,
+                    first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+                    PRIMARY KEY (source, sku)
+                );
+                CREATE TABLE price_history (
+                    source TEXT NOT NULL, sku TEXT NOT NULL, observed_at TEXT NOT NULL,
+                    list_price REAL, price REAL NOT NULL, available INTEGER NOT NULL,
+                    PRIMARY KEY (source, sku, observed_at)
+                );
+                CREATE TABLE runs (
+                    id TEXT PRIMARY KEY, mode TEXT NOT NULL, requested_sources TEXT NOT NULL,
+                    started_at TEXT NOT NULL, finished_at TEXT, status TEXT NOT NULL, error TEXT
+                );
+                CREATE TABLE source_runs (
+                    run_id TEXT NOT NULL, source TEXT NOT NULL, started_at TEXT NOT NULL,
+                    finished_at TEXT, status TEXT NOT NULL, raw_count INTEGER NOT NULL DEFAULT 0,
+                    kept_count INTEGER NOT NULL DEFAULT 0, drop_gender INTEGER NOT NULL DEFAULT 0,
+                    drop_size INTEGER NOT NULL DEFAULT 0, error TEXT,
+                    PRIMARY KEY (run_id, source)
+                );
+                INSERT INTO products VALUES (
+                    'test', 'sku-1', 'Tênis', 'https://example.test', NULL, NULL,
+                    '2026-01-01T00:00:00+00:00', '2026-01-01T02:00:00+00:00'
+                );
+                INSERT INTO products VALUES (
+                    'test', 'sku-fallback', 'Tênis', 'https://example.test', NULL, NULL,
+                    '2025-12-01T00:00:00+00:00', '2025-12-01T00:00:00+00:00'
+                );
+                INSERT INTO runs VALUES (
+                    'run-ok', 'snapshot', 'test', '2026-01-01T00:00:00+00:00',
+                    '2026-01-01T01:00:00+00:00', 'success', NULL
+                );
+                INSERT INTO source_runs(run_id, source, started_at, finished_at, status)
+                VALUES ('run-ok', 'test', '2026-01-01T00:00:00+00:00',
+                        '2026-01-01T00:30:00+00:00', 'success');
+            """)
+            conn.commit()
+            conn.close()
+
+            with connect(db) as migrated:
+                rows = list(migrated.execute(
+                    "SELECT last_seen_run_id FROM products ORDER BY sku"
+                ))
+
+            self.assertEqual([row["last_seen_run_id"] for row in rows], [
+                "run-ok", "run-ok",
+            ])
 
     def test_record_run_keeps_real_observation_changes(self):
         with tempfile.TemporaryDirectory() as tmp:

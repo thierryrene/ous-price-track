@@ -12,11 +12,14 @@ from __future__ import annotations
 import logging
 import os
 import time
+from datetime import datetime, timedelta, timezone
 from html import escape
 from typing import Iterable, List, Optional
 
 import httpx
 
+from .bot.callbacks import encode as callback_data
+from .bot.views import build_save_filter_button
 from .sizes import format_sizes_compact
 from .sources import SOURCES, source_emojis, source_labels
 
@@ -41,7 +44,9 @@ __all__ = [
     "PENDING_MESSAGES_CACHE",
     "TelegramConfigError",
     "MENU_KEYBOARD",
+    "NOTIFICATION_KEYBOARD",
     "STORE_KEYBOARD",
+    "UPDATE_KEYBOARD",
     "CATEGORY_KEYBOARD",
     "CATALOG_KEYBOARD",
     "SOURCE_LABEL_SHORT",
@@ -57,11 +62,15 @@ __all__ = [
     "build_store_keyboard",
     "build_filter_keyboard",
     "build_filter_message",
+    "format_relative_time",
+    "build_freshness_message",
+    "build_progress_message",
     "send_filter_menu",
     "send_menu_message",
     "send_alert",
     "send_digest",
     "send_promotions",
+    "build_update_keyboard",
 ]
 
 
@@ -431,28 +440,40 @@ def _resolve_creds(bot_token, chat_id, dry_run):
     return bot_token, chat_id
 
 
-# Menu principal: atalhos de uso frequente e acesso aos submenus.
+# Menu principal: consulta e atualização são ações distintas. Consulta usa o
+# último catálogo confirmado; atualização pode levar vários minutos.
 MENU_KEYBOARD = {
     "inline_keyboard": [
         [
-            {"text": "🛍️ Catálogo por Loja", "callback_data": "stores:menu"},
+            {"text": "🔥 Ver ofertas", "callback_data": callback_data("stores", "menu")},
         ],
         [
-            {"text": "🌟 Promoções de Hoje", "callback_data": "run:daily_promos"},
-            {"text": "📈 Top Descontos", "callback_data": "catalog:top_discounts"},
+            {"text": "🆕 Promoções de hoje", "callback_data": callback_data("run", "daily_promos")},
+            {"text": "📈 Maiores descontos", "callback_data": callback_data("catalog", "top_discounts")},
         ],
         [
-            {"text": "🔄 Atualizar Todas", "callback_data": "run:all"},
-            {"text": "📊 Snapshot Geral", "callback_data": "run:snapshot"},
+            {"text": "💾 Filtros salvos", "callback_data": callback_data("saved", "list")},
+            {"text": "⭐ Favoritos", "callback_data": callback_data("favorites", "page", 0)},
         ],
         [
-            {"text": "📊 Status das Lojas", "callback_data": "catalog:status"},
-            {"text": "🗄️ Estatísticas", "callback_data": "catalog:db_stats"},
+            {"text": "🔔 Meus alertas", "callback_data": callback_data("alerts", "prefs")},
         ],
         [
-            {"text": "⚙️ Manutenção", "callback_data": "catalog:menu"},
+            {"text": "🔄 Atualizar catálogo", "callback_data": callback_data("update", "menu")},
+            {"text": "ℹ️ Status", "callback_data": callback_data("catalog", "status")},
+        ],
+        [
+            {"text": "⚙️ Administração", "callback_data": callback_data("catalog", "menu")},
         ]
     ]
+}
+
+# Alertas são históricos: abrir o menu a partir deles cria uma nova superfície
+# interativa, em vez de substituir o conteúdo da notificação.
+NOTIFICATION_KEYBOARD = {
+    "inline_keyboard": [[
+        {"text": "🏠 Abrir menu", "callback_data": callback_data("home", "new")},
+    ]]
 }
 
 
@@ -461,14 +482,13 @@ def build_store_keyboard() -> dict:
     buttons = [
         {
             "text": f"{config.emoji} {config.label}",
-            "callback_data": f"run:{key}",
+            "callback_data": callback_data("run", key),
         }
         for key, config in SOURCES.items()
     ]
     rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
     rows.append([
-        {"text": "🔄 Atualizar Todas", "callback_data": "run:all"},
-        {"text": "🔙 Voltar", "callback_data": "run:back"},
+        {"text": "🔙 Voltar", "callback_data": callback_data("run", "back")},
     ])
     return {"inline_keyboard": rows}
 
@@ -476,22 +496,42 @@ def build_store_keyboard() -> dict:
 STORE_KEYBOARD = build_store_keyboard()
 
 
+def build_update_keyboard() -> dict:
+    """Build a source menu dedicated to explicit, potentially slow updates."""
+    buttons = [
+        {
+            "text": f"{config.emoji} {config.label}",
+            "callback_data": callback_data("update", key),
+        }
+        for key, config in SOURCES.items()
+    ]
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    rows.append([
+        {"text": "🔄 Atualizar todas", "callback_data": callback_data("update", "all")},
+        {"text": "🔙 Voltar", "callback_data": callback_data("run", "back")},
+    ])
+    return {"inline_keyboard": rows}
+
+
+UPDATE_KEYBOARD = build_update_keyboard()
+
+
 CATALOG_KEYBOARD = {
     "inline_keyboard": [
         [
-            {"text": "🔄 Forçar Atualização", "callback_data": "catalog:force_update"},
-            {"text": "📊 Status das Lojas", "callback_data": "catalog:status"},
+            {"text": "🔄 Forçar Atualização", "callback_data": callback_data("catalog", "force_update")},
+            {"text": "📊 Status das Lojas", "callback_data": callback_data("catalog", "status")},
         ],
         [
-            {"text": "🗄️ Estatísticas DB", "callback_data": "catalog:db_stats"},
-            {"text": "🔍 Normalizar Catálogo", "callback_data": "catalog:normalize"},
+            {"text": "🗄️ Estatísticas DB", "callback_data": callback_data("catalog", "db_stats")},
+            {"text": "🔍 Normalizar Catálogo", "callback_data": callback_data("catalog", "normalize")},
         ],
         [
-            {"text": "📈 Top Descontos", "callback_data": "catalog:top_discounts"},
-            {"text": "🧹 Purgar Produtos", "callback_data": "catalog:purge"},
+            {"text": "📈 Top Descontos", "callback_data": callback_data("catalog", "top_discounts")},
+            {"text": "🧹 Purgar Produtos", "callback_data": callback_data("catalog", "purge")},
         ],
         [
-            {"text": "🔙 Voltar", "callback_data": "run:back"}
+            {"text": "🔙 Voltar", "callback_data": callback_data("run", "back")}
         ]
     ]
 }
@@ -543,8 +583,8 @@ def send_telegram_messages(messages, *, bot_token, chat_id, dry_run=False,
     continue_keyboard = {
         "inline_keyboard": [
             [
-                {"text": "📥 Continuar", "callback_data": "load:more"},
-                {"text": "❌ Cancelar", "callback_data": "load:cancel"},
+                {"text": "📥 Continuar", "callback_data": callback_data("load", "more")},
+                {"text": "❌ Cancelar", "callback_data": callback_data("load", "cancel")},
             ]
         ]
     }
@@ -591,23 +631,23 @@ def send_telegram_batch(messages, *, bot_token, chat_id, reply_markup=None):
 CATEGORY_KEYBOARD = {
     "inline_keyboard": [
         [
-            {"text": "👟 Tênis/Calçados", "callback_data": "run:daily_promos:tenis"},
-            {"text": "👕 Roupas em Geral", "callback_data": "run:daily_promos:vestuario"}
+            {"text": "👟 Tênis/Calçados", "callback_data": callback_data("run", "daily_promos", "tenis")},
+            {"text": "👕 Roupas em Geral", "callback_data": callback_data("run", "daily_promos", "vestuario")}
         ],
         [
-            {"text": "⚽ Camisas de Time", "callback_data": "run:daily_promos:camisas_time"},
-            {"text": "🧥 Agasalhos", "callback_data": "run:daily_promos:agasalhos"}
+            {"text": "⚽ Camisas de Time", "callback_data": callback_data("run", "daily_promos", "camisas_time")},
+            {"text": "🧥 Agasalhos", "callback_data": callback_data("run", "daily_promos", "agasalhos")}
         ],
         [
-            {"text": "🧢 Acessórios", "callback_data": "run:daily_promos:acessorios"},
-            {"text": "🌟 Todas as Peças", "callback_data": "run:daily_promos:tudo"}
+            {"text": "🧢 Acessórios", "callback_data": callback_data("run", "daily_promos", "acessorios")},
+            {"text": "🌟 Todas as Peças", "callback_data": callback_data("run", "daily_promos", "tudo")}
         ],
         [
-            {"text": "🔥 Acima de 50% OFF", "callback_data": "run:daily_promos:50off"},
-            {"text": "💸 Até R$ 100", "callback_data": "run:daily_promos:ate100"}
+            {"text": "🔥 Acima de 50% OFF", "callback_data": callback_data("run", "daily_promos", "50off")},
+            {"text": "💸 Até R$ 100", "callback_data": callback_data("run", "daily_promos", "ate100")}
         ],
         [
-            {"text": "🔙 Voltar", "callback_data": "run:back"}
+            {"text": "🔙 Voltar", "callback_data": callback_data("run", "back")}
         ]
     ]
 }
@@ -636,13 +676,13 @@ PRICE_OPTIONS = [
 ]
 
 DISCOUNT_OPTIONS = [
-    ("50", "🔥 +50% OFF"),
-    ("30", "💥 +30% OFF"),
+    ("50", "🔥 50% ou mais"),
+    ("30", "💥 30% ou mais"),
     ("all", "🏷️ Todos"),
 ]
 
 
-def build_filter_keyboard(source: str, filters: dict) -> dict:
+def build_filter_keyboard(source: str, filters: dict, counts: dict | None = None) -> dict:
     """Build the inline keyboard for the filter menu.
 
     ``filters`` is a dict with keys: category, max_price, min_discount.
@@ -656,43 +696,53 @@ def build_filter_keyboard(source: str, filters: dict) -> dict:
     def _mark(option_key, current, label):
         return ("✅ " + label) if option_key == current else label
 
+    def _counted(group, option_key, label):
+        if not counts:
+            return label
+        value = counts.get(group, {}).get(option_key)
+        return label if value is None else f"{label} · {value}"
+
     rows = []
 
     # Category rows (max 3 per line)
     cat_options = CATEGORY_OPTIONS + EXTRA_CATEGORIES
 
     rows.append([
-        {"text": _mark(k, sel_cat, label), "callback_data": f"filter:{source}:cat:{k}"}
+        {"text": _mark(k, sel_cat, _counted("category", k, label)), "callback_data": callback_data("filter", source, "cat", k)}
         for k, label in cat_options[:3]
     ])
     if len(cat_options) > 3:
         rows.append([
-            {"text": _mark(k, sel_cat, label), "callback_data": f"filter:{source}:cat:{k}"}
+            {"text": _mark(k, sel_cat, _counted("category", k, label)), "callback_data": callback_data("filter", source, "cat", k)}
             for k, label in cat_options[3:6]
         ])
     rows.append([
-        {"text": _mark("all", sel_cat, "🌟 Todas"), "callback_data": f"filter:{source}:cat:all"}
+        {"text": _mark("all", sel_cat, _counted("category", "all", "🌟 Todas")), "callback_data": callback_data("filter", source, "cat", "all")}
     ])
 
     # Price rows (max 3 per line)
     rows.append([
-        {"text": _mark(k, sel_price, label), "callback_data": f"filter:{source}:price:{k}"}
+        {"text": _mark(k, sel_price, _counted("max_price", k, label)), "callback_data": callback_data("filter", source, "price", k)}
         for k, label in PRICE_OPTIONS[:3]
     ])
     rows.append([
-        {"text": _mark("all", sel_price, "🌟 Sem limite"), "callback_data": f"filter:{source}:price:all"}
+        {"text": _mark("all", sel_price, _counted("max_price", "all", "🌟 Sem limite")), "callback_data": callback_data("filter", source, "price", "all")}
     ])
 
     # Discount row (3 buttons, fits in one line)
     rows.append([
-        {"text": _mark(k, sel_disc, label), "callback_data": f"filter:{source}:disc:{k}"}
+        {"text": _mark(k, sel_disc, _counted("min_discount", k, label)), "callback_data": callback_data("filter", source, "disc", k)}
         for k, label in DISCOUNT_OPTIONS
     ])
 
-    # Action row
+    # Consulta rápida pelo último catálogo confirmado; atualização explícita.
     rows.append([
-        {"text": "🔄 Rodar Varredura", "callback_data": f"filter:{source}:run"},
-        {"text": "🔙 Lojas", "callback_data": "stores:menu"},
+        {"text": "🔥 Ver ofertas", "callback_data": callback_data("filter", source, "run")},
+        {"text": "🔄 Atualizar", "callback_data": callback_data("filter", source, "refresh")},
+    ])
+    rows.append([build_save_filter_button(source)])
+    rows.append([
+        {"text": "🔙 Lojas", "callback_data": callback_data("stores", "menu")},
     ])
 
     return {"inline_keyboard": rows}
@@ -720,11 +770,142 @@ def build_filter_message(source: str, filters: dict) -> str:
     if disc == "all":
         parts.append("🏷️ Desconto: <b>Todos</b>")
     else:
-        parts.append(f"🏷️ Desconto: <b>+{disc}% OFF</b>")
+        parts.append(f"🏷️ Desconto: <b>{disc}% ou mais</b>")
 
     parts.append("")
-    parts.append("Toque nos filtros para alternar, depois clique em <b>Rodar Varredura</b>.")
+    parts.append(
+        "<b>Ver ofertas</b> consulta o último catálogo confirmado. "
+        "Use <b>Atualizar</b> para conferir os preços na loja."
+    )
     return "\n".join(parts)
+
+
+def _as_utc(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def format_relative_time(checked_at, *, now=None) -> str:
+    """Format a collection timestamp as a short, user-facing relative age."""
+    checked = _as_utc(checked_at)
+    current = _as_utc(now) or datetime.now(timezone.utc)
+    if checked is None:
+        return "em horário desconhecido"
+    seconds = max(0, int((current - checked).total_seconds()))
+    if seconds < 60:
+        return "agora"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"há {minutes} min"
+    hours = minutes // 60
+    if hours < 24:
+        return f"há {hours}h"
+    days = hours // 24
+    return f"há {days} dia" if days == 1 else f"há {days} dias"
+
+
+def _freshness_value(value, key, default=None):
+    if isinstance(value, dict):
+        return value.get(key, default)
+    return getattr(value, key, default)
+
+
+def build_freshness_message(source, checked_at=None, *, successful=None,
+                            fresh_hours=2, expired_hours=8, now=None) -> str:
+    """Explain snapshot freshness without implying real-time verification.
+
+    ``source`` may be a source key or a ``SourceFreshness``-like object/dict.
+    Keeping this duck-typed avoids coupling the Telegram adapter to services.
+    """
+    freshness = source if not isinstance(source, str) else None
+    if freshness is not None:
+        source = _freshness_value(freshness, "source", "")
+        checked_at = (_freshness_value(freshness, "last_success_at")
+                      or _freshness_value(freshness, "checked_at"))
+        if successful is None:
+            has_snapshot = _freshness_value(freshness, "has_snapshot")
+            if has_snapshot is None:
+                has_snapshot = _freshness_value(freshness, "successful_run_id") is not None
+            successful = bool(has_snapshot)
+        age_seconds = _freshness_value(freshness, "age_seconds")
+        latest_status = _freshness_value(freshness, "status")
+    else:
+        age_seconds = None
+        latest_status = None
+    if successful is None:
+        successful = True
+    checked = _as_utc(checked_at)
+    current = _as_utc(now) or datetime.now(timezone.utc)
+    label = SOURCE_LABEL_SHORT.get(source, source)
+    relative = format_relative_time(checked, now=current)
+    age_hours = (float(age_seconds) / 3600 if age_seconds is not None
+                 else ((current - checked).total_seconds() / 3600 if checked else None))
+
+    if not successful or checked is None:
+        return (
+            f"🔴 <b>{escape(label)}: catálogo desatualizado</b>\n"
+            "A última atualização falhou ou não há coleta confirmada."
+        )
+    latest_failed = latest_status not in (None, "success")
+    failure_note = ("\n⚠️ A tentativa mais recente falhou; estes dados são da "
+                    "última coleta completa." if latest_failed else "")
+    if age_hours <= fresh_hours:
+        return (f"🟢 <b>Preços verificados {relative}</b> · {escape(label)}"
+                f"{failure_note}")
+    if age_hours <= expired_hours:
+        return (
+            f"🟡 <b>Preços verificados {relative}</b> · {escape(label)}\n"
+            f"Pode haver alterações; você pode atualizar em segundo plano.{failure_note}"
+        )
+    return (
+        f"🔴 <b>Preços verificados {relative}</b> · {escape(label)}\n"
+        "Catálogo antigo; atualize antes de confiar nos valores."
+    )
+
+
+def _format_duration(seconds) -> str:
+    if seconds is None:
+        return ""
+    seconds = max(0, int(seconds))
+    minutes, remainder = divmod(seconds, 60)
+    if minutes:
+        return f"{minutes}m{remainder:02d}s"
+    return f"{remainder}s"
+
+
+def build_progress_message(completed: int, total: int, *, current=None,
+                           page=None, total_pages=None, elapsed_seconds=None,
+                           eta_seconds=None) -> str:
+    """Build the single Telegram message that a background run can edit."""
+    lines = [
+        "🔄 <b>Atualizando catálogo</b>",
+        f"{max(0, completed)} de {max(0, total)} lojas concluídas",
+    ]
+    if current:
+        current_label = SOURCE_LABEL_SHORT.get(current, current)
+        detail = f"Agora: {escape(current_label)}"
+        if page is not None and total_pages:
+            detail += f" — página {page}/{total_pages}"
+        lines.append(detail)
+    timings = []
+    if elapsed_seconds is not None:
+        timings.append(f"decorrido: {_format_duration(elapsed_seconds)}")
+    if eta_seconds is not None:
+        timings.append(f"estimativa: ~{_format_duration(eta_seconds)}")
+    if timings:
+        lines.append(" · ".join(timings))
+    lines.append("Você pode continuar usando o bot.")
+    return "\n".join(lines)
 
 
 def send_filter_menu(bot_token: str, chat_id: str, source: str, filters: dict,
@@ -754,6 +935,18 @@ def send_filter_menu(bot_token: str, chat_id: str, source: str, filters: dict,
             resp = client.post(edit_url, json=edit_payload)
             if resp.status_code == 200:
                 return 1
+            try:
+                description = str(resp.json().get("description", ""))
+            except Exception:
+                description = resp.text
+            if "message is not modified" in description.lower():
+                return 1
+            log.warning(
+                "Telegram não pôde editar menu %s (%s): %s",
+                edit_message_id,
+                resp.status_code,
+                description[:300],
+            )
         resp = client.post(url, json=payload)
         if resp.status_code != 200:
             log.error("Telegram filter menu falhou (%s): %s", resp.status_code, resp.text[:300])
@@ -761,14 +954,43 @@ def send_filter_menu(bot_token: str, chat_id: str, source: str, filters: dict,
     return 1
 
 
-def send_menu_message(bot_token=None, chat_id=None, text="Escolha uma opção no menu abaixo para monitoramento on-demand:", dry_run=False) -> int:
+def send_menu_message(bot_token=None, chat_id=None,
+                      text="👟 <b>Ofertas Streetwear</b>\nEscolha uma opção:",
+                      dry_run=False) -> int:
     """Envia uma mensagem contendo apenas o teclado de menu do bot."""
     bot_token, chat_id = _resolve_creds(bot_token, chat_id, dry_run)
     return _send_messages([text], bot_token, chat_id, dry_run, "menu", reply_markup=MENU_KEYBOARD)
 
 
+def _alert_updated_at(changes: dict, updated_at=None) -> datetime:
+    value = updated_at
+    if value is None:
+        observed = []
+        for rows in changes.values():
+            for row in rows or []:
+                try:
+                    candidate = row["observed_at"]
+                except (KeyError, IndexError, TypeError):
+                    candidate = None
+                if candidate:
+                    observed.append(str(candidate))
+        value = max(observed) if observed else datetime.now(timezone.utc)
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone(timedelta(hours=-3), name="BRT"))
+
+
+def _with_update_line(messages: Iterable[str], changes: dict, updated_at=None) -> List[str]:
+    local = _alert_updated_at(changes, updated_at)
+    line = f"<i>Atualizado em {local.strftime('%d/%m/%Y às %H:%M')} (BRT)</i>"
+    return [f"{line}\n{message}" for message in messages]
+
+
 def send_alert(changes: dict, *, bot_token=None, chat_id=None, dry_run=False,
-               reply_markup=MENU_KEYBOARD, summary=None, period_label="agora") -> int:
+               reply_markup=NOTIFICATION_KEYBOARD, summary=None, period_label="agora",
+               updated_at=None) -> int:
     """Modo alerta-ao-vivo: junta todas as categorias num bloco com cabeçalho.
 
     `changes` é o dict retornado por storage.find_changes (chaves: new_promo,
@@ -788,7 +1010,9 @@ def send_alert(changes: dict, *, bot_token=None, chat_id=None, dry_run=False,
 
     use_summary = (total >= _summary_threshold()) if summary is None else summary
     if use_summary:
-        messages = build_summary(changes, period_label=period_label)
+        messages = _with_update_line(
+            build_summary(changes, period_label=period_label), changes, updated_at,
+        )
         sent = _send_messages(messages, bot_token, chat_id, dry_run, "alert-resumo",
                               reply_markup=reply_markup)
         log.info("Telegram alert (resumo): %d msg(s) com %d mudança(s) (%s).",
@@ -812,7 +1036,9 @@ def send_alert(changes: dict, *, bot_token=None, chat_id=None, dry_run=False,
         for row in changes.get(cat, []):
             lines.append(_format_for_category(cat, row))
 
-    messages = list(_chunk_messages(header, lines))
+    messages = _with_update_line(
+        _chunk_messages(header, lines), changes, updated_at,
+    )
     sent = _send_messages(messages, bot_token, chat_id, dry_run, "alert", reply_markup=reply_markup)
     log.info("Telegram alert: %d msg(s) com %d mudança(s) (%s).",
              sent, total, ", ".join(f"{k}={v}" for k, v in counts.items() if v))
@@ -820,8 +1046,9 @@ def send_alert(changes: dict, *, bot_token=None, chat_id=None, dry_run=False,
 
 
 def send_digest(changes: dict, *, period_label: str = "hoje",
-                bot_token=None, chat_id=None, dry_run=False, reply_markup=MENU_KEYBOARD,
-                summary=True) -> int:
+                bot_token=None, chat_id=None, dry_run=False,
+                reply_markup=NOTIFICATION_KEYBOARD,
+                summary=True, updated_at=None) -> int:
     """Modo digest: por default um **resumo** compacto (uma linha por item,
     agrupado por tipo de peça). Passe `summary=False` para o formato antigo de
     4 seções detalhadas."""
@@ -834,7 +1061,9 @@ def send_digest(changes: dict, *, period_label: str = "hoje",
     bot_token, chat_id = _resolve_creds(bot_token, chat_id, dry_run)
 
     if summary:
-        messages = build_summary(changes, period_label=period_label)
+        messages = _with_update_line(
+            build_summary(changes, period_label=period_label), changes, updated_at,
+        )
         sent = _send_messages(messages, bot_token, chat_id, dry_run, "digest-resumo",
                               reply_markup=reply_markup)
         log.info("Telegram digest (resumo): %d msg(s) com %d mudança(s).", sent, total)
@@ -857,7 +1086,9 @@ def send_digest(changes: dict, *, period_label: str = "hoje",
         for row in rows:
             lines.append(_format_for_category(cat, row))
 
-    messages = list(_chunk_messages(header, lines))
+    messages = _with_update_line(
+        _chunk_messages(header, lines), changes, updated_at,
+    )
     sent = _send_messages(messages, bot_token, chat_id, dry_run, "digest", reply_markup=reply_markup)
     log.info("Telegram digest: %d msg(s) com %d mudança(s).", sent, total)
     return sent

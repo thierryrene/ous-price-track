@@ -71,6 +71,40 @@ Ajustes por env (ver `.env.example`): `SUMMARY_THRESHOLD` (limiar do alert) e
 `SUMMARY_PER_GROUP` (máx. de itens por grupo antes do `…+K mais`, default 12).
 A classificação de tipo de peça vive em [src/ous_monitor/categories.py](src/ous_monitor/categories.py).
 
+#### Consulta rápida no bot
+
+O bot separa leitura e atualização: **Ver ofertas** consulta imediatamente o
+último snapshot completo e bem-sucedido; **Atualizar** executa o scraper em
+segundo plano, edita uma mensagem de progresso e reaplica os filtros ao
+terminar. O resultado informa quando os preços foram verificados (verde até
+`CATALOG_FRESH_HOURS`, amarelo até `CATALOG_STALE_HOURS`, vermelho depois).
+Ao consultar um snapshot fora da faixa verde, o bot entrega o cache e inicia
+automaticamente uma revalidação completa em segundo plano.
+
+Menus, filtros, resultados, paginação, status e administração usam
+`editMessageText`: cada clique substitui a tela atual em vez de empilhar novas
+mensagens. O estado de filtro é persistido em `bot_sessions`, portanto sobrevive
+a reinícios. Callbacks novos são versionados e os botões antigos já enviados
+continuam aceitos. Alertas automáticos permanecem como mensagens históricas e
+usam **Abrir menu** para criar deliberadamente uma nova tela interativa.
+
+O snapshot só inclui produtos vistos no último run bem-sucedido e disponíveis.
+Resultados são paginados em 5 itens para sempre caberem em uma única mensagem
+editável. Domínios independentes rodam em paralelo
+(`SCRAPE_MAX_WORKERS`); todas as fontes Netshoes permanecem sequenciais para
+reduzir HTTP 429.
+
+No bot, cada opção de categoria, preço e desconto mostra quantas ofertas do
+último catálogo confirmado ela contém. A busca atual pode ser salva com um
+toque; os resultados oferecem ações numeradas para favoritar produtos. As telas
+**Filtros salvos**, **Favoritos** e **Meus alertas** reutilizam a mesma mensagem,
+inclusive em paginação, exclusão e mudança de preferências.
+
+Alertas personalizados são opt-in. Ao ativá-los em **Meus alertas**, o servidor
+entrega no horário UTC escolhido um resumo das promoções/quedas que combinam
+com filtros salvos e de qualquer mudança detectada nos favoritos. Cada evento
+é persistido após o envio para não ser repetido nos ciclos seguintes.
+
 Há ainda o subcomando **`snapshot`** (workflow `snapshot.yml`, só manual):
 roda os scrapers e envia um digest com **todos os produtos atualmente em
 promoção** — útil pra "varrer o catálogo agora" sem esperar pelo cron.
@@ -157,6 +191,10 @@ Se o Coolify/VPS também rodar scrapers on-demand pelo Telegram, escolha uma
 fonte oficial de verdade para o banco: GitHub Actions versionando `prices.db`
 ou o volume persistente da VPS. Rodar os dois sem sincronização pode deixar o
 dashboard e o bot olhando históricos diferentes.
+
+Filtros salvos, favoritos, preferências e deduplicação de alertas também vivem
+nesse SQLite. Por isso, o volume `data` do servidor precisa ser persistente e
+conter o mesmo catálogo consultado pelo bot.
 
 Setup único:
 

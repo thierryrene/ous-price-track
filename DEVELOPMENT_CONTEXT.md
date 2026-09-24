@@ -26,7 +26,7 @@ Este documento registra o estado atual do projeto **ous-price-monitor** no servi
 ### 3. Ajustes de Conflito no Coolify
 * Removemos a diretiva `ports` que expunha a porta `8000` física no host (já ocupada pelo painel do Coolify).
 * Substituímos por `expose: - "8000"` para delegação do tráfego ao Traefik de forma isolada.
-* Removemos a propriedade estática `container_name` para evitar conflitos de recriação de containers durante deploys sem downtime.
+* O compose local mantém `container_name: ous-price-monitor`, coerente com o container atualmente ativo. Se o deploy migrar para réplicas ou zero-downtime gerenciado pelo Coolify, remover essa propriedade no compose e atualizar este documento no mesmo commit.
 
 ---
 

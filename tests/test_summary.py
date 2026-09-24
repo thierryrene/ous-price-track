@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from ous_monitor.categories import categorize
@@ -103,6 +104,19 @@ class BuildSummaryTest(unittest.TestCase):
         with patch("ous_monitor.notifier.build_summary", wraps=build_summary) as spy:
             send_digest(changes, period_label="hoje", dry_run=True)
         spy.assert_called_once()
+
+    def test_every_alert_message_starts_with_update_time(self) -> None:
+        changes = {"new_promo": [row("Tênis Único", 100, 300)],
+                   "ended": [], "weaker": [], "price_up": []}
+        updated_at = datetime(2026, 9, 24, 15, 30, tzinfo=timezone.utc)
+        with patch("ous_monitor.notifier._send_messages", return_value=1) as sender:
+            send_alert(changes, dry_run=True, updated_at=updated_at)
+        messages = sender.call_args.args[0]
+        self.assertTrue(messages)
+        self.assertTrue(all(
+            message.startswith("<i>Atualizado em 24/09/2026 às 12:30 (BRT)</i>\n")
+            for message in messages
+        ))
 
 
 if __name__ == "__main__":

@@ -1,18 +1,9 @@
 name: monitor
 
-on:
-  schedule:
-    # 12:00 UTC = 09:00 BRT  → modo "alert" (ao vivo; resume sozinho se vier muita coisa)
-    # 21:00 UTC = 18:00 BRT  → modo "digest" (resumo do dia agrupado por tipo de peça)
-    - cron: "0 12,21 * * *"
-  workflow_dispatch:
-    inputs:
-      mode:
-        description: "Modo de notificação"
-        required: false
-        default: "alert"
-        type: choice
-        options: [alert, digest]
+# DESATIVADO: o monitor roda no servidor/Coolify, que é a fonte única do DB.
+# Mantido apenas como documentação histórica; o único gatilho possível cria
+# um job explicitamente ignorado, e o workflow também fica desabilitado no GitHub.
+on: workflow_dispatch
 
 # Evita que dois runs simultâneos tentem commitar o DB ao mesmo tempo.
 concurrency:
@@ -24,6 +15,7 @@ permissions:
 
 jobs:
   run:
+    if: ${{ false }}
     runs-on: ubuntu-latest
     # Adidas Netshoes sozinho leva ~4min (164 páginas × 1.5s) — 20min dá margem.
     timeout-minutes: 20

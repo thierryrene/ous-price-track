@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
+import math
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -19,6 +23,7 @@ CREATE TABLE IF NOT EXISTS products (
     brand        TEXT,
     first_seen   TEXT NOT NULL,
     last_seen    TEXT NOT NULL,
+    last_seen_run_id TEXT,
     PRIMARY KEY (source, sku)
 );
 
@@ -66,6 +71,73 @@ CREATE TABLE IF NOT EXISTS source_runs (
 
 CREATE INDEX IF NOT EXISTS idx_source_runs_source_started
     ON source_runs(source, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS bot_sessions (
+    chat_id       TEXT PRIMARY KEY,
+    state_json    TEXT NOT NULL,
+    ui_message_id INTEGER,
+    updated_at    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS saved_filters (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id        TEXT NOT NULL,
+    name           TEXT NOT NULL COLLATE NOCASE,
+    source         TEXT NOT NULL,
+    category       TEXT NOT NULL,
+    max_price      REAL,
+    min_discount   REAL,
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL,
+    UNIQUE (chat_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_saved_filters_chat_updated
+    ON saved_filters(chat_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS product_refs (
+    ref          TEXT PRIMARY KEY,
+    source       TEXT NOT NULL,
+    sku          TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    UNIQUE (source, sku)
+);
+
+CREATE TABLE IF NOT EXISTS favorites (
+    chat_id      TEXT NOT NULL,
+    source       TEXT NOT NULL,
+    sku          TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    PRIMARY KEY (chat_id, source, sku),
+    FOREIGN KEY (source, sku) REFERENCES products(source, sku) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_favorites_chat_created
+    ON favorites(chat_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS alert_preferences (
+    chat_id      TEXT PRIMARY KEY,
+    enabled      INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    hour_utc     INTEGER NOT NULL CHECK (hour_utc BETWEEN 0 AND 23),
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_alert_preferences_dispatch
+    ON alert_preferences(enabled, hour_utc);
+
+CREATE TABLE IF NOT EXISTS personalized_alert_deliveries (
+    chat_id      TEXT NOT NULL,
+    event_key    TEXT NOT NULL,
+    delivered_at TEXT NOT NULL,
+    PRIMARY KEY (chat_id, event_key)
+);
+
+CREATE TABLE IF NOT EXISTS scheduler_state (
+    job        TEXT PRIMARY KEY,
+    slot       TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -78,6 +150,49 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE price_history ADD COLUMN stock_qty INTEGER")
     if "run_id" not in cols:
         conn.execute("ALTER TABLE price_history ADD COLUMN run_id TEXT")
+    product_cols = {row["name"] for row in conn.execute("PRAGMA table_info(products)")}
+    if "last_seen_run_id" not in product_cols:
+        conn.execute("ALTER TABLE products ADD COLUMN last_seen_run_id TEXT")
+    # DBs anteriores já têm `last_seen`, mas não o vínculo explícito ao run.
+    # Prefira o sucesso que precede a última visualização; o segundo SELECT é
+    # fallback para bases antigas cujos timestamps não permitem essa correlação.
+    conn.execute(
+        """
+        UPDATE products
+           SET last_seen_run_id = COALESCE(
+               (
+                   SELECT sr.run_id
+                     FROM source_runs sr
+                     JOIN runs r ON r.id = sr.run_id
+                    WHERE sr.source = products.source
+                      AND sr.status = 'success'
+                      AND sr.finished_at IS NOT NULL
+                      AND r.finished_at IS NOT NULL
+                      AND sr.finished_at <= products.last_seen
+                    ORDER BY sr.finished_at DESC, sr.started_at DESC
+                    LIMIT 1
+               ),
+               (
+                   SELECT sr.run_id
+                     FROM source_runs sr
+                     JOIN runs r ON r.id = sr.run_id
+                    WHERE sr.source = products.source
+                      AND sr.status = 'success'
+                      AND sr.finished_at IS NOT NULL
+                      AND r.finished_at IS NOT NULL
+                    ORDER BY sr.finished_at DESC, sr.started_at DESC
+                    LIMIT 1
+               )
+           )
+         WHERE last_seen_run_id IS NULL
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_products_source_last_run
+            ON products(source, last_seen_run_id)
+        """
+    )
 
 
 def _now() -> str:
@@ -103,6 +218,423 @@ def connect(db_path: Path):
         raise
     finally:
         conn.close()
+
+
+def get_scheduler_slot(conn: sqlite3.Connection, job: str) -> str | None:
+    row = conn.execute(
+        "SELECT slot FROM scheduler_state WHERE job = ?",
+        (job,),
+    ).fetchone()
+    return None if row is None else str(row["slot"])
+
+
+def set_scheduler_slot(conn: sqlite3.Connection, job: str, slot: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO scheduler_state(job, slot, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(job) DO UPDATE SET
+            slot = excluded.slot,
+            updated_at = excluded.updated_at
+        """,
+        (job, slot, _now()),
+    )
+
+
+def load_bot_session(conn: sqlite3.Connection, chat_id: int | str) -> dict | None:
+    row = conn.execute(
+        "SELECT state_json, ui_message_id FROM bot_sessions WHERE chat_id = ?",
+        (str(chat_id),),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        state = json.loads(row["state_json"])
+    except (TypeError, ValueError):
+        state = {}
+    if not isinstance(state, dict):
+        state = {}
+    state["ui_message_id"] = row["ui_message_id"]
+    return state
+
+
+def save_bot_session(
+    conn: sqlite3.Connection,
+    chat_id: int | str,
+    state: dict,
+    *,
+    ui_message_id: int | None = None,
+) -> None:
+    payload = dict(state)
+    payload.pop("ui_message_id", None)
+    conn.execute(
+        """
+        INSERT INTO bot_sessions(chat_id, state_json, ui_message_id, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(chat_id) DO UPDATE SET
+            state_json = excluded.state_json,
+            ui_message_id = COALESCE(excluded.ui_message_id, bot_sessions.ui_message_id),
+            updated_at = excluded.updated_at
+        """,
+        (str(chat_id), json.dumps(payload, ensure_ascii=False), ui_message_id, _now()),
+    )
+
+
+def clear_bot_session(conn: sqlite3.Connection, chat_id: int | str) -> None:
+    conn.execute("DELETE FROM bot_sessions WHERE chat_id = ?", (str(chat_id),))
+
+
+SAVED_FILTER_LIMIT = 10
+DEFAULT_ALERT_ENABLED = False
+DEFAULT_ALERT_HOUR_UTC = 12
+
+
+def _required_text(value: object, field: str, max_length: int = 200) -> str:
+    cleaned = str(value).strip()
+    if not cleaned:
+        raise ValueError(f"{field} não pode ser vazio")
+    if len(cleaned) > max_length:
+        raise ValueError(f"{field} deve ter no máximo {max_length} caracteres")
+    return cleaned
+
+
+def _optional_number(value: object, field: str, maximum: float | None = None) -> float | None:
+    if value is None or value == "" or str(value).lower() == "all":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field} deve ser numérico") from None
+    if not math.isfinite(number):
+        raise ValueError(f"{field} deve ser um número finito")
+    if number < 0 or (maximum is not None and number > maximum):
+        suffix = f" entre 0 e {maximum:g}" if maximum is not None else " positivo"
+        raise ValueError(f"{field} deve ser{suffix}")
+    return number
+
+
+def save_filter(
+    conn: sqlite3.Connection,
+    chat_id: int | str,
+    name: str,
+    *,
+    source: str,
+    category: str,
+    max_price: object = None,
+    min_discount: object = None,
+) -> sqlite3.Row:
+    """Cria ou atualiza um filtro pelo nome, limitado a 10 por chat."""
+    chat = _required_text(chat_id, "chat_id", 100)
+    clean_name = _required_text(name, "name", 60)
+    clean_source = _required_text(source, "source", 100)
+    clean_category = _required_text(category, "category", 100)
+    clean_max_price = _optional_number(max_price, "max_price")
+    clean_min_discount = _optional_number(min_discount, "min_discount", 100)
+
+    existing = conn.execute(
+        "SELECT id FROM saved_filters WHERE chat_id = ? AND name = ? COLLATE NOCASE",
+        (chat, clean_name),
+    ).fetchone()
+    now = _now()
+    if existing is None:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM saved_filters WHERE chat_id = ?", (chat,)
+        ).fetchone()[0]
+        if count >= SAVED_FILTER_LIMIT:
+            raise ValueError(f"limite de {SAVED_FILTER_LIMIT} filtros salvos atingido")
+        cursor = conn.execute(
+            """
+            INSERT INTO saved_filters(
+                chat_id, name, source, category, max_price, min_discount,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                chat, clean_name, clean_source, clean_category, clean_max_price,
+                clean_min_discount, now, now,
+            ),
+        )
+        filter_id = cursor.lastrowid
+    else:
+        filter_id = existing["id"]
+        conn.execute(
+            """
+            UPDATE saved_filters
+               SET name = ?, source = ?, category = ?, max_price = ?,
+                   min_discount = ?, updated_at = ?
+             WHERE chat_id = ? AND id = ?
+            """,
+            (
+                clean_name, clean_source, clean_category, clean_max_price,
+                clean_min_discount, now, chat, filter_id,
+            ),
+        )
+    return conn.execute(
+        "SELECT * FROM saved_filters WHERE chat_id = ? AND id = ?",
+        (chat, filter_id),
+    ).fetchone()
+
+
+def list_saved_filters(conn: sqlite3.Connection, chat_id: int | str) -> list:
+    return list(conn.execute(
+        """
+        SELECT * FROM saved_filters
+         WHERE chat_id = ?
+         ORDER BY updated_at DESC, id DESC
+        """,
+        (str(chat_id),),
+    ))
+
+
+def load_saved_filter(
+    conn: sqlite3.Connection, chat_id: int | str, filter_id: int
+) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM saved_filters WHERE chat_id = ? AND id = ?",
+        (str(chat_id), int(filter_id)),
+    ).fetchone()
+
+
+def delete_saved_filter(
+    conn: sqlite3.Connection, chat_id: int | str, filter_id: int
+) -> bool:
+    cursor = conn.execute(
+        "DELETE FROM saved_filters WHERE chat_id = ? AND id = ?",
+        (str(chat_id), int(filter_id)),
+    )
+    return cursor.rowcount == 1
+
+
+def _product_ref_digest(source: str, sku: str) -> str:
+    payload = f"{len(source)}:{source}{sku}".encode("utf-8")
+    digest = hashlib.sha256(payload).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def get_or_create_product_ref(
+    conn: sqlite3.Connection, source: str, sku: str
+) -> str:
+    """Retorna uma ref estável, opaca e segura para usar em callback_data."""
+    clean_source = _required_text(source, "source", 200)
+    clean_sku = _required_text(sku, "sku", 500)
+    row = conn.execute(
+        "SELECT ref FROM product_refs WHERE source = ? AND sku = ?",
+        (clean_source, clean_sku),
+    ).fetchone()
+    if row is not None:
+        return row["ref"]
+
+    digest = _product_ref_digest(clean_source, clean_sku)
+    lengths = list(range(12, len(digest), 2)) + [len(digest)]
+    for length in lengths:
+        ref = digest[:length]
+        collision = conn.execute(
+            "SELECT source, sku FROM product_refs WHERE ref = ?", (ref,)
+        ).fetchone()
+        if collision is not None:
+            if collision["source"] == clean_source and collision["sku"] == clean_sku:
+                return ref
+            continue
+        conn.execute(
+            "INSERT OR IGNORE INTO product_refs(ref, source, sku, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (ref, clean_source, clean_sku, _now()),
+        )
+        inserted = conn.execute(
+            "SELECT source, sku FROM product_refs WHERE ref = ?", (ref,)
+        ).fetchone()
+        if (
+            inserted is not None
+            and inserted["source"] == clean_source
+            and inserted["sku"] == clean_sku
+        ):
+            return ref
+        concurrent = conn.execute(
+            "SELECT ref FROM product_refs WHERE source = ? AND sku = ?",
+            (clean_source, clean_sku),
+        ).fetchone()
+        if concurrent is not None:
+            return concurrent["ref"]
+    raise RuntimeError("não foi possível gerar uma referência de produto única")
+
+
+def resolve_product_ref(conn: sqlite3.Connection, ref: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT source, sku FROM product_refs WHERE ref = ?",
+        (_required_text(ref, "ref", 50),),
+    ).fetchone()
+
+
+def toggle_favorite(
+    conn: sqlite3.Connection, chat_id: int | str, source: str, sku: str
+) -> bool:
+    """Alterna o favorito e retorna True quando o produto ficou favoritado."""
+    chat = _required_text(chat_id, "chat_id", 100)
+    clean_source = _required_text(source, "source", 200)
+    clean_sku = _required_text(sku, "sku", 500)
+    product = conn.execute(
+        "SELECT 1 FROM products WHERE source = ? AND sku = ?",
+        (clean_source, clean_sku),
+    ).fetchone()
+    if product is None:
+        raise ValueError("produto não encontrado")
+    get_or_create_product_ref(conn, clean_source, clean_sku)
+    cursor = conn.execute(
+        "INSERT OR IGNORE INTO favorites(chat_id, source, sku, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        (chat, clean_source, clean_sku, _now()),
+    )
+    if cursor.rowcount == 1:
+        return True
+    conn.execute(
+        "DELETE FROM favorites WHERE chat_id = ? AND source = ? AND sku = ?",
+        (chat, clean_source, clean_sku),
+    )
+    return False
+
+
+def delete_favorite(
+    conn: sqlite3.Connection, chat_id: int | str, source: str, sku: str
+) -> bool:
+    """Remove um favorito de forma idempotente."""
+    cursor = conn.execute(
+        "DELETE FROM favorites WHERE chat_id = ? AND source = ? AND sku = ?",
+        (str(chat_id), str(source), str(sku)),
+    )
+    return cursor.rowcount == 1
+
+
+def list_favorites(conn: sqlite3.Connection, chat_id: int | str) -> list:
+    """Lista favoritos com cadastro, ref curta e a observação mais recente."""
+    return list(conn.execute(
+        """
+        SELECT f.chat_id, f.created_at AS favorited_at,
+               p.source, p.sku, pr.ref, p.name, p.url, p.image, p.brand,
+               ph.list_price, ph.price, ph.available, ph.sizes, ph.stock_qty,
+               ph.observed_at
+          FROM favorites f
+          JOIN products p
+            ON p.source = f.source AND p.sku = f.sku
+          JOIN product_refs pr
+            ON pr.source = f.source AND pr.sku = f.sku
+          LEFT JOIN price_history ph
+            ON ph.source = f.source
+           AND ph.sku = f.sku
+           AND ph.observed_at = (
+               SELECT MAX(latest.observed_at)
+                 FROM price_history latest
+                WHERE latest.source = f.source AND latest.sku = f.sku
+           )
+         WHERE f.chat_id = ?
+         ORDER BY f.created_at DESC, p.source, p.name
+        """,
+        (str(chat_id),),
+    ))
+
+
+def _alert_preferences_dict(chat_id: int | str, enabled: bool, hour_utc: int) -> dict:
+    return {
+        "chat_id": str(chat_id),
+        "enabled": bool(enabled),
+        "hour_utc": int(hour_utc),
+    }
+
+
+def get_alert_preferences(conn: sqlite3.Connection, chat_id: int | str) -> dict:
+    row = conn.execute(
+        "SELECT enabled, hour_utc FROM alert_preferences WHERE chat_id = ?",
+        (str(chat_id),),
+    ).fetchone()
+    if row is None:
+        return _alert_preferences_dict(
+            chat_id, DEFAULT_ALERT_ENABLED, DEFAULT_ALERT_HOUR_UTC
+        )
+    return _alert_preferences_dict(chat_id, row["enabled"], row["hour_utc"])
+
+
+def set_alert_preferences(
+    conn: sqlite3.Connection,
+    chat_id: int | str,
+    *,
+    enabled: bool,
+    hour_utc: int,
+) -> dict:
+    chat = _required_text(chat_id, "chat_id", 100)
+    if not isinstance(enabled, bool):
+        raise ValueError("enabled deve ser booleano")
+    if isinstance(hour_utc, bool) or not isinstance(hour_utc, int):
+        raise ValueError("hour_utc deve ser um inteiro entre 0 e 23")
+    if not 0 <= hour_utc <= 23:
+        raise ValueError("hour_utc deve estar entre 0 e 23")
+    now = _now()
+    conn.execute(
+        """
+        INSERT INTO alert_preferences(chat_id, enabled, hour_utc, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(chat_id) DO UPDATE SET
+            enabled = excluded.enabled,
+            hour_utc = excluded.hour_utc,
+            updated_at = excluded.updated_at
+        """,
+        (chat, int(enabled), hour_utc, now, now),
+    )
+    return _alert_preferences_dict(chat, enabled, hour_utc)
+
+
+def list_enabled_alert_preferences(
+    conn: sqlite3.Connection, hour_utc: int | None = None
+) -> list:
+    params = []
+    where = "enabled = 1"
+    if hour_utc is not None:
+        if (
+            isinstance(hour_utc, bool)
+            or not isinstance(hour_utc, int)
+            or not 0 <= hour_utc <= 23
+        ):
+            raise ValueError("hour_utc deve estar entre 0 e 23")
+        where += " AND hour_utc = ?"
+        params.append(hour_utc)
+    rows = conn.execute(
+        f"SELECT chat_id, enabled, hour_utc FROM alert_preferences WHERE {where} "
+        "ORDER BY chat_id",
+        params,
+    )
+    return [
+        _alert_preferences_dict(row["chat_id"], row["enabled"], row["hour_utc"])
+        for row in rows
+    ]
+
+
+def was_personalized_alert_delivered(
+    conn: sqlite3.Connection, chat_id: int | str, event_key: str
+) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1 FROM personalized_alert_deliveries
+         WHERE chat_id = ? AND event_key = ?
+        """,
+        (str(chat_id), _required_text(event_key, "event_key", 500)),
+    ).fetchone()
+    return row is not None
+
+
+def record_personalized_alert_delivery(
+    conn: sqlite3.Connection, chat_id: int | str, event_key: str
+) -> bool:
+    """Registra entrega; retorna False quando o evento já havia sido entregue."""
+    chat = _required_text(chat_id, "chat_id", 100)
+    event = _required_text(event_key, "event_key", 500)
+    cursor = conn.execute(
+        """
+        INSERT OR IGNORE INTO personalized_alert_deliveries(
+            chat_id, event_key, delivered_at
+        ) VALUES (?, ?, ?)
+        """,
+        (chat, event, _now()),
+    )
+    return cursor.rowcount == 1
 
 
 def start_run(conn: sqlite3.Connection, *, mode: str, sources: Iterable[str]) -> str:
@@ -238,20 +770,24 @@ def record_run(
         if existing is None:
             conn.execute(
                 """
-                INSERT INTO products(source, sku, name, url, image, brand, first_seen, last_seen)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO products(
+                    source, sku, name, url, image, brand, first_seen, last_seen,
+                    last_seen_run_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (p.source, p.sku, p.name, p.url, p.image, p.brand, now, now),
+                (p.source, p.sku, p.name, p.url, p.image, p.brand, now, now, run_id),
             )
             counters["new"] += 1
         else:
             conn.execute(
                 """
                 UPDATE products
-                   SET name = ?, url = ?, image = ?, brand = ?, last_seen = ?
+                   SET name = ?, url = ?, image = ?, brand = ?, last_seen = ?,
+                       last_seen_run_id = ?
                  WHERE source = ? AND sku = ?
                 """,
-                (p.name, p.url, p.image, p.brand, now, p.source, p.sku),
+                (p.name, p.url, p.image, p.brand, now, run_id, p.source, p.sku),
             )
             counters["updated"] += 1
 

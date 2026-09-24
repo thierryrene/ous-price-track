@@ -99,11 +99,14 @@ Tudo sob `src/ous_monitor/`:
 2. **Scrapers** (`scrapers/{ous,netshoes,baw,umbro,approve}.py`) — implementam o
    protocolo `Scraper` de `scrapers/base.py`: string `source` + `fetch_all() ->
    list[Product]`. Cada um **pagina por completo** (ver Contrato de paginação).
-3. **Storage** (`storage.py`) — SQLite com `products`, `price_history`, `runs` e
-   `source_runs`. `record_run()` faz upsert dos produtos, anexa observação
+3. **Storage** (`storage.py`) — SQLite com `products`, `price_history`, `runs`,
+   `source_runs` e estado do bot (`bot_sessions`, `saved_filters`, `product_refs`,
+   `favorites`, `alert_preferences`, `personalized_alert_deliveries`).
+   `record_run()` faz upsert dos produtos, anexa observação
    ligada a `run_id` **somente para produtos novos ou com preço,
    disponibilidade, tamanhos ou estoque alterados**, deduplica SKUs repetidos
-   e devolve contadores. `last_seen` é atualizado em toda coleta.
+   e devolve contadores. `last_seen` e `last_seen_run_id` são atualizados em
+   toda coleta; o segundo vincula o produto ao snapshot que realmente o viu.
    `find_changes()` usa window functions (`LAG`) para detectar 4 categorias
    mutuamente exclusivas (ver abaixo). Pragmas: WAL, `busy_timeout`,
    `foreign_keys`. Run-tracking: `start_run`/`finish_run`/`record_source_run`/
@@ -112,7 +115,9 @@ Tudo sob `src/ous_monitor/`:
    de arquivo** (`fcntl`, exclusão entre processos cron×bot), roda cada scraper
    isolado (um caindo não derruba os outros), grava run-tracking, persiste e
    detecta mudanças. `CatalogService`: queries de catálogo, `purge`, `normalize`,
-   stats e manutenção preventiva com backup SQLite consistente. A retenção
+   stats e manutenção preventiva com backup SQLite consistente. Scrapers de
+   domínios diferentes usam paralelismo limitado (`SCRAPE_MAX_WORKERS`, default
+   4); todas as fontes Netshoes formam um grupo sequencial. A retenção
    remove apenas observações antigas que tenham uma sucessora, preservando
    sempre a última referência de cada SKU. `SourceRegistry` projeta
    `sources.SOURCES`.
@@ -218,12 +223,32 @@ Quando o vocabulário muda, o filtro só vale para ingestões futuras — rode
 `--dry-run-telegram` formata e loga sem enviar; `--no-telegram` pula. Falhas no
 notifier nunca abortam o run.
 
-O menu principal dá acesso a promoções do dia, atualização/snapshot, status,
-estatísticas e manutenção. O submenu **Catálogo por Loja** é gerado diretamente
+O menu principal separa consulta, promoções, atualização, status e
+administração. O submenu **Catálogo por Loja** é gerado diretamente
 de `sources.SOURCES`: toda fonte cadastrada aparece automaticamente e abre os
-filtros de categoria, preço e desconto antes da varredura. Não mantenha listas
-paralelas de lojas no notifier. Varreduras sem mudanças também enviam uma
-confirmação de conclusão ao chat.
+filtros de categoria, preço e desconto. **Ver ofertas** consulta somente o
+último snapshot completo (`last_seen_run_id`, `available=1`), em páginas de
+5; **Atualizar** roda scraping, edita o progresso e reaplica os filtros. Não
+mantenha listas paralelas de lojas no notifier. Consultar snapshot mais velho
+que `CATALOG_FRESH_HOURS` entrega o cache e agenda revalidação automática.
+Varreduras sem mudanças também enviam confirmação ao chat.
+
+**Navegação em uma mensagem.** Todo callback de menu, filtro, resultado,
+paginação, status ou administração deve editar a mensagem de origem; `/start`
+e `/menu` são as entradas que criam uma tela. Use o codec versionado em
+`bot/callbacks.py`, mantendo a leitura dos callbacks legados. Filtros vivem em
+`bot_sessions` no SQLite, nunca apenas em memória. O erro inofensivo
+`message is not modified` conta como sucesso e não pode disparar `sendMessage`.
+Alertas/digests são históricos: usam `NOTIFICATION_KEYBOARD`, cujo botão
+**Abrir menu** cria uma nova tela sem sobrescrever a notificação.
+
+**Acompanhamentos pessoais.** O menu principal expõe filtros salvos, favoritos
+e preferências de alertas. Filtros mostram contagens do último snapshot válido;
+o botão de salvar faz upsert de uma descrição automática, com limite de 10 por
+chat. Produtos usam refs opacas curtas nos callbacks, nunca SKU bruto. O resumo
+personalizado é opt-in, roda no horário UTC escolhido e cruza `new_promo` com
+os filtros salvos; favoritos recebem qualquer categoria de mudança. Registre a
+entrega em `personalized_alert_deliveries` somente depois do envio bem-sucedido.
 
 **Modo resumo (alta carga).** Para não inundar o chat, `send_alert`/`send_digest`
 podem emitir um resumo via `build_summary()`: **uma linha por item**
@@ -236,6 +261,10 @@ total ≥ `SUMMARY_THRESHOLD` (default 15); `send_digest` resume por padrão
 (`summary=False` volta ao formato de 4 seções). `categories.py` é separado do
 filtro SQL `services._category_sql` de propósito.
 
+Todo alerta e digest começa com uma linha discreta `Atualizado em ... (BRT)`.
+O timestamp vem da observação mais recente incluída na mensagem ou é informado
+explicitamente pela coleta agendada.
+
 ## Server / segurança
 
 `server.py` (FastAPI) expõe `/health`, `/health/ready`, `/status` e `/webhook`.
@@ -247,21 +276,28 @@ há chat com IA). Variáveis:
 - `TELEGRAM_WEBHOOK_SECRET` — validado no header em `/webhook`.
 - `TELEGRAM_ALLOWED_CHAT_IDS` — allowlist (vírgula); vazio → usa `TELEGRAM_CHAT_ID`.
 - `SUMMARY_THRESHOLD` / `SUMMARY_PER_GROUP` — ajuste do resumo.
+- `CATALOG_FRESH_HOURS` / `CATALOG_STALE_HOURS` — faixas de frescor do
+  snapshot (defaults 2h/8h).
+- `SCRAPE_MAX_WORKERS` — paralelismo entre domínios (default 4; Netshoes serial).
+- `PERSONALIZED_ALERTS_ENABLED` (default `true`) — ativa o laço de resumos
+  personalizados. `PERSONALIZED_ALERT_INTERVAL_SECONDS` define a frequência de
+  verificação (default 900s) e `PERSONALIZED_ALERT_WINDOW_HOURS` a janela (26h).
 - `AUTO_MAINTENANCE_ENABLED` (default `true`) — ativa autocuidado diário no
   servidor. Defaults: início após 300s, intervalo 24h, histórico 90 dias, runs
   180 dias, alerta acima de 50 MB e 7 backups em `data/backups/`. As variáveis
   `MAINTENANCE_*` correspondentes estão documentadas no `.env.example`.
+- `AUTO_MONITOR_ENABLED` (default `true`) — executa as fontes com `run_in_ci`
+  no próprio servidor. `MONITOR_SCHEDULE_UTC` aceita pares `hora:modo`
+  (default `12:alert,21:digest`); o slot concluído é persistido no SQLite para
+  não repetir uma coleta depois de restart.
 
 ## Deploy
 
 - **Docker:** base `python:3.12-slim` (Debian). Todas as deps são Python puro /
   wheels manylinux — sem navegador. `CMD` sobe `uvicorn ous_monitor.server:app`.
-- **GitHub Actions** (`.github/workflows/monitor.yml`): 2×/dia, instala só
-  `httpx`+`selectolax`, roda as 8 fontes de CI e commita o `data/prices.db`
-  atualizado (estado entre execuções). `maintenance.yml` roda aos domingos,
-  guarda por 14 dias um artifact do DB anterior, aplica retenção/compactação e
-  commita o resultado. `snapshot.yml` é manual.
+- **GitHub Actions:** desativado; não atualiza nem commita mais o banco.
 - **Coolify/VPS:** Docker Compose + Traefik; bind-mount `./data:/app/data`.
+  O servidor é a fonte única e executa monitoramento e manutenção internamente.
 
 ## Versão do Python
 

@@ -5,9 +5,41 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/);
 o projeto ainda é `0.1.0` (sem releases tagueados), então as mudanças recentes
 ficam em **[Não lançado]**.
 
-## [Não lançado] — 2026-06-30
+## [Não lançado] — 2026-09-02
+
+### Corrigido em 2026-09-24
+- Monitoramento agendado transferido integralmente do GitHub Actions para o
+  servidor, eliminando a divergência entre o banco remoto e o catálogo do bot.
+- Duas coletas UTC persistentes (`12:alert` e `21:digest`) no processo FastAPI,
+  com deduplicação de slots após reinícios e uso do mesmo lock das ações manuais.
+- Alertas e digests exibem na primeira linha a data e hora da coleta em BRT.
 
 ### Adicionado
+- **Acompanhamentos pessoais no Telegram**: filtros salvos (até 10 por chat),
+  favoritos paginados, referências curtas de produto e preferências opt-in de
+  alerta por horário UTC, com deduplicação persistente de cada evento entregue.
+- **Contagens nos filtros**: categoria, teto de preço e desconto mínimo mostram
+  quantas promoções do último snapshot bem-sucedido correspondem a cada opção.
+- **Resumos personalizados automáticos**: filtros salvos acompanham novas
+  promoções/quedas e favoritos acompanham qualquer mudança detectada; o laço do
+  servidor entrega no horário configurado sem repetir notificações.
+- **Navegação Telegram em uma única mensagem**: menus, filtros, resultados,
+  paginação, status, manutenção e progresso agora reutilizam a mensagem do
+  callback com `editMessageText`; páginas foram ajustadas para 5 produtos para
+  permanecerem dentro do limite do Telegram.
+- **Callbacks versionados e retrocompatíveis** (`bot/callbacks.py`), com
+  validação rígida do limite de 64 bytes, e sessões de filtro persistidas na
+  nova tabela SQLite `bot_sessions`.
+- **Notificações históricas preservadas**: alertas e digests usam um botão
+  dedicado **Abrir menu**, que cria uma nova tela sem substituir o alerta.
+- **Catálogo rápido e verificável no Telegram**: consultas filtradas usam o
+  último snapshot bem-sucedido sem scraping implícito, exibem frescor e paginam
+  5 ofertas; snapshots vencidos são entregues e revalidados em segundo plano,
+  e atualizações explícitas mostram progresso e reaplicam os filtros.
+- `products.last_seen_run_id`, metadados `SourceFreshness` e migração/backfill
+  para excluir ofertas indisponíveis ou ausentes da coleta confirmada mais recente.
+- Paralelismo limitado entre domínios (`SCRAPE_MAX_WORKERS`), mantendo as
+  fontes Netshoes sequenciais para respeitar rate-limit.
 - **Autocuidado automático do SQLite**: no servidor, manutenção diária com
   backup consistente, retenção de 7 cópias, limpeza de histórico/runs e
   `VACUUM`; no GitHub Actions, workflow semanal com artifact do backup por
@@ -37,6 +69,10 @@ ficam em **[Não lançado]**.
   `MIMO.md`, `GEMINI.md` e `.github/copilot-instructions.md` viram ponteiros.
 
 ### Alterado
+- Webhook reutiliza clientes HTTP, confirma callbacks rapidamente e desloca
+  adaptadores síncronos para o executor; atualizações duplicadas são rejeitadas.
+- Menu do bot separa consulta, atualização e administração; listagens comuns
+  não usam mais o marcador incorreto `🆕`.
 - Menu do Telegram reorganizado em atalhos e submenus. O catálogo por loja e
   seus labels agora são derivados de `sources.SOURCES`, cobrindo
   automaticamente as 9 fontes (incluindo Converse e Netshoes BaW).
@@ -63,6 +99,10 @@ ficam em **[Não lançado]**.
   `run_store_scraper`, a dependência e as envs `GEMINI_API_KEY`.
 
 ### Corrigido
+- Revalidação automática de catálogo vencido recebia argumentos duplicados no
+  background task e podia falhar antes de iniciar o scraper.
+- Repetir um filtro já selecionado podia transformar o erro inofensivo
+  `message is not modified` em uma nova mensagem duplicada.
 - Retenção de histórico agora preserva sempre a observação mais recente de cada
   SKU, mesmo quando ela própria tem mais de 90 dias, mantendo a referência para
   futuras detecções de mudança.

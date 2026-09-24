@@ -2,9 +2,9 @@
 
 Este documento descreve o plano de ação, o contexto de desenvolvimento e os passos necessários para realizar o deploy da aplicação **ous-price-monitor** no Coolify (Digital Ocean).
 
-A aplicação conta com um **sistema híbrido operacional**:
-1. **GitHub Actions:** agenda diária do monitor e persistência do `data/prices.db`.
-2. **Coolify/FastAPI:** servidor do bot Telegram para webhooks e ações on-demand por botões.
+A aplicação usa a VPS como **fonte única operacional**. O processo FastAPI no
+Coolify mantém o bot, executa duas coletas diárias e persiste `data/prices.db`
+no volume local. GitHub Actions não executa monitoramento nem manutenção.
 
 O bot é **orientado a botões** (menus inline); mensagens de texto comum recebem o menu.
 
