@@ -58,6 +58,16 @@ class ServerSchedulerTests(unittest.TestCase):
                     "2026-09-24T12:00Z",
                 )
 
+    def test_later_manual_slot_covers_earlier_scheduled_slot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "prices.db"
+            with connect(db) as conn:
+                set_scheduler_slot(conn, "catalog_monitor", "2026-09-24T14:24Z")
+                self.assertGreaterEqual(
+                    get_scheduler_slot(conn, "catalog_monitor"),
+                    "2026-09-24T12:00Z",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

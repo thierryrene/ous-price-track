@@ -709,7 +709,10 @@ def _latest_due_monitor_slot(
 def run_scheduled_monitor(slot: str, mode: str) -> bool:
     """Refresh every scheduled source once for a persistent UTC slot."""
     with connect(DEFAULT_DB) as conn:
-        if get_scheduler_slot(conn, "catalog_monitor") == slot:
+        completed_slot = get_scheduler_slot(conn, "catalog_monitor")
+        # A manual catch-up may finish after its nominal UTC slot. Treat that
+        # later slot as covering earlier due slots from the same day.
+        if completed_slot is not None and completed_slot >= slot:
             return False
 
     sources = source_keys()
