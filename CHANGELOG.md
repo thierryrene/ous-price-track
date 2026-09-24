@@ -15,6 +15,8 @@ ficam em **[Não lançado]**.
 - Alertas e digests exibem na primeira linha a data e hora da coleta em BRT.
 - A coleta agendada inclui todas as fontes, inclusive Approve.
 - Netshoes aceita até 1.000 páginas e usa backoff ampliado para suportar 429.
+- Execuções deixadas em aberto por reinício do servidor são marcadas como
+  interrompidas na inicialização.
 
 ### Adicionado
 - **Acompanhamentos pessoais no Telegram**: filtros salvos (até 10 por chat),

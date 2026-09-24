@@ -666,6 +666,37 @@ def finish_run(
     )
 
 
+def recover_interrupted_runs(conn: sqlite3.Connection) -> int:
+    """Close run records left active when the server process was restarted."""
+    rows = conn.execute(
+        "SELECT id FROM runs WHERE status = 'running'",
+    ).fetchall()
+    if not rows:
+        return 0
+    now = _now()
+    run_ids = [row["id"] for row in rows]
+    conn.executemany(
+        """
+        UPDATE runs
+           SET finished_at = ?, status = 'failed',
+               error = COALESCE(error, 'Interrupted by server restart')
+         WHERE id = ? AND status = 'running'
+        """,
+        [(now, run_id) for run_id in run_ids],
+    )
+    conn.executemany(
+        """
+        UPDATE source_runs
+           SET finished_at = COALESCE(finished_at, ?),
+               status = 'failed',
+               error = COALESCE(error, 'Interrupted by server restart')
+         WHERE run_id = ? AND status = 'running'
+        """,
+        [(now, run_id) for run_id in run_ids],
+    )
+    return len(run_ids)
+
+
 def record_source_run(
     conn: sqlite3.Connection,
     *,

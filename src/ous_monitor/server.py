@@ -47,6 +47,7 @@ from .storage import (
     list_saved_filters,
     load_saved_filter,
     load_bot_session,
+    recover_interrupted_runs,
     resolve_product_ref,
     save_bot_session,
     save_filter,
@@ -96,6 +97,10 @@ async def lifespan(_app: FastAPI):
     tasks = []
     _app.state.telegram_client = httpx.AsyncClient(timeout=10.0)
     _app.state.telegram_sync_client = httpx.Client(timeout=10.0)
+    with connect(DEFAULT_DB) as conn:
+        interrupted = recover_interrupted_runs(conn)
+    if interrupted:
+        log.warning("%d execução(ões) interrompida(s) recuperada(s) após restart", interrupted)
     if _env_bool("AUTO_MAINTENANCE_ENABLED", True):
         tasks.append(asyncio.create_task(_maintenance_loop()))
     if _env_bool("PERSONALIZED_ALERTS_ENABLED", True):

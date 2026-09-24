@@ -16,6 +16,7 @@ from ous_monitor.storage import (
     load_bot_session,
     record_run,
     record_source_run,
+    recover_interrupted_runs,
     save_bot_session,
     start_run,
 )
@@ -37,6 +38,21 @@ def product(price: float, list_price: float | None = None) -> Product:
 
 
 class StorageTests(unittest.TestCase):
+    def test_recover_interrupted_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "prices.db"
+            with connect(db) as conn:
+                run_id = start_run(conn, mode="alert", sources=["test"])
+                self.assertEqual(recover_interrupted_runs(conn), 1)
+                row = conn.execute(
+                    "SELECT status, finished_at, error FROM runs WHERE id = ?",
+                    (run_id,),
+                ).fetchone()
+                self.assertEqual(row["status"], "failed")
+                self.assertIsNotNone(row["finished_at"])
+                self.assertIn("restart", row["error"])
+                self.assertEqual(recover_interrupted_runs(conn), 0)
+
     def test_bot_session_survives_new_database_connection(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "prices.db"
