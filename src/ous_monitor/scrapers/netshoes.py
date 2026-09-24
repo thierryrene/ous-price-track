@@ -32,17 +32,18 @@ log = logging.getLogger(__name__)
 
 BASE = "https://clube.netshoes.com.br"
 SEARCH_PATH = "/busca"
-REQUEST_DELAY_S = 1.5
+REQUEST_DELAY_S = 2.0
 TIMEOUT_S = 30.0
-MAX_PAGES_HARD_CAP = 200  # safety net (Adidas tem ~164 páginas; ÖUS ~5, BaW ~2)
+# Proteção contra paginação infinita se o servidor declarar totalPages inválido.
+MAX_PAGES_HARD_CAP = 1000
 
 # Netshoes rate-limita (429) IPs compartilhados — runners de CI especialmente.
 # Em vez de falhar de imediato, repetimos com backoff exponencial, respeitando
 # o header Retry-After quando presente.
 RETRY_STATUSES = {429, 503}
-MAX_RETRIES = 4
-BACKOFF_BASE_S = 3.0
-MAX_BACKOFF_S = 60.0
+MAX_RETRIES = 8
+BACKOFF_BASE_S = 5.0
+MAX_BACKOFF_S = 120.0
 
 HEADERS = {
     "User-Agent": (
