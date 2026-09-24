@@ -31,7 +31,7 @@ from .notifier import (
     UPDATE_KEYBOARD, build_freshness_message, build_progress_message, build_summary,
     build_filter_keyboard, build_filter_message, format_relative_time,
 )
-from .sources import SOURCES, ci_source_keys
+from .sources import SOURCES, source_keys
 from urllib.parse import urlparse
 from .services import CatalogService, MonitorService, ProductFilters, run_exclusive
 from .storage import (
@@ -712,7 +712,7 @@ def run_scheduled_monitor(slot: str, mode: str) -> bool:
         if get_scheduler_slot(conn, "catalog_monitor") == slot:
             return False
 
-    sources = ci_source_keys()
+    sources = source_keys()
     result = run_exclusive(
         lambda: MonitorService(DEFAULT_DB).run(
             sources=sources,

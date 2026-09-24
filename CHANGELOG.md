@@ -13,6 +13,8 @@ ficam em **[Não lançado]**.
 - Duas coletas UTC persistentes (`12:alert` e `21:digest`) no processo FastAPI,
   com deduplicação de slots após reinícios e uso do mesmo lock das ações manuais.
 - Alertas e digests exibem na primeira linha a data e hora da coleta em BRT.
+- A coleta agendada inclui todas as fontes, inclusive Approve.
+- Netshoes aceita até 1.000 páginas e usa backoff ampliado para suportar 429.
 
 ### Adicionado
 - **Acompanhamentos pessoais no Telegram**: filtros salvos (até 10 por chat),

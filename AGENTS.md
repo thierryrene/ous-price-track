@@ -286,8 +286,8 @@ há chat com IA). Variáveis:
   servidor. Defaults: início após 300s, intervalo 24h, histórico 90 dias, runs
   180 dias, alerta acima de 50 MB e 7 backups em `data/backups/`. As variáveis
   `MAINTENANCE_*` correspondentes estão documentadas no `.env.example`.
-- `AUTO_MONITOR_ENABLED` (default `true`) — executa as fontes com `run_in_ci`
-  no próprio servidor. `MONITOR_SCHEDULE_UTC` aceita pares `hora:modo`
+- `AUTO_MONITOR_ENABLED` (default `true`) — executa todas as fontes do catálogo
+  no próprio servidor, incluindo `approve`. `MONITOR_SCHEDULE_UTC` aceita pares `hora:modo`
   (default `12:alert,21:digest`); o slot concluído é persistido no SQLite para
   não repetir uma coleta depois de restart.
 
